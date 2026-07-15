@@ -1,0 +1,10 @@
+.git/
+.vs/
+**/bin/
+**/obj/
+**/TestResults/
+**/coverage/
+*.log
+.env
+.env.*
+
