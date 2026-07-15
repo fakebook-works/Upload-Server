@@ -10,4 +10,10 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.28" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Upload-Server.Tests\**\*.cs" />
+    <Content Remove="Upload-Server.Tests\**\*" />
+    <None Remove="Upload-Server.Tests\**\*" />
+  </ItemGroup>
+
 </Project>

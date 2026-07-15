@@ -4,7 +4,12 @@ Standalone upload service for Fakebook media. This repo is intentionally separat
 
 ## Local Run
 
-Create `appsettings.Development.json` from `appsettings.example.json` and set `Jwt:SigningKey` to the same signing key used by Fakebook auth/API gateway for local development.
+Create `appsettings.Development.json` from `appsettings.example.json` and configure:
+
+- `Jwt:SigningKey`: same signing key used by Authentication and API Gateway.
+- `AuthService:Url`: Authentication GraphQL endpoint.
+- `Cors:AllowedOrigins`: frontend origins allowed to upload directly.
+- `UploadStorage:RootPath`: persistent media directory.
 
 ```powershell
 dotnet run --launch-profile http
@@ -14,19 +19,27 @@ Default URL: `http://localhost:5050`
 
 ## Flow
 
-1. Authenticated frontend calls `POST /media/upload-requests` with `fileName`, `contentType`, and `size`.
-2. Upload server returns a short-lived signed `/media/uploads/{uploadId}?token=...` URL.
-3. Frontend uploads `multipart/form-data` with field name `file` to the signed URL.
-4. Server validates and stores the file under a generated filename.
-5. Server returns a public `/media/files/{generatedName}` URL.
+1. Authenticated frontend sends `multipart/form-data` directly to `POST /media/upload`; field name is `file`.
+2. Upload Server validates the JWT locally, then validates the live session through Authentication `me { userId }`.
+3. Server validates and stores the file under a generated filename.
+4. Server returns a public `/media/files/{generatedName}` URL.
+5. Frontend sends that URL in a supported Gateway post/story mutation; SocialGraph persists it and returns it in later feed/story queries.
+
+Batch upload is available at `POST /media/upload-multiple` with up to 10 files.
 
 ## Security Checks
 
 - Rejects path traversal and non-leaf filenames.
 - Rejects disallowed extensions and MIME types.
 - Enforces max upload size.
-- Requires the upload body to match the issued upload link metadata.
+- Requires a valid JWT and active Authentication session.
 - Validates magic headers for JPEG, PNG, GIF, WebP, MP4, and PDF.
 - Rejects executable `MZ` payloads.
 - Rejects active-content/backdoor markers such as scripts, shell execution strings, PHP, PowerShell, and command shells.
 - Rejects image uploads containing SVG/HTML active markup.
+
+## Tests
+
+```powershell
+dotnet test .\Upload-Server.Tests\Upload-Server.Tests.csproj
+```

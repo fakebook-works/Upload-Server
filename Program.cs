@@ -1,7 +1,6 @@
-using System.Collections.Concurrent;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -12,6 +11,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services
     .AddOptions<UploadStorageOptions>()
     .Bind(builder.Configuration.GetSection(UploadStorageOptions.SectionName));
+
+builder.Services
+    .AddOptions<AuthServiceOptions>()
+    .Bind(builder.Configuration.GetSection(AuthServiceOptions.SectionName))
+    .Validate(
+        options => Uri.TryCreate(options.Url, UriKind.Absolute, out var uri) &&
+                   (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps),
+        "AuthService:Url must be an absolute HTTP or HTTPS URL.")
+    .ValidateOnStart();
 
 builder.Services
     .AddOptions<JwtOptions>()
@@ -57,6 +65,10 @@ builder.Services
     });
 
 builder.Services.AddAuthorization();
+builder.Services.AddHttpClient("auth-service", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
 
 var app = builder.Build();
 
@@ -64,41 +76,166 @@ app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Validate authenticated sessions against the Auth service
+app.Use(async (context, next) =>
+{
+    if (context.User.Identity?.IsAuthenticated == true)
+    {
+        var authOptions = context.RequestServices.GetRequiredService<IOptions<AuthServiceOptions>>().Value;
+        var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
+        var client = httpClientFactory.CreateClient("auth-service");
+
+        var authHeader = context.Request.Headers.Authorization.ToString();
+        if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            var token = authHeader["Bearer ".Length..].Trim();
+
+            using var authRequest = new HttpRequestMessage(HttpMethod.Post, authOptions.Url);
+            authRequest.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            authRequest.Content = new StringContent(
+                JsonSerializer.Serialize(new { query = "{ me { userId } }" }),
+                Encoding.UTF8,
+                "application/json");
+
+            try
+            {
+                using var response = await client.SendAsync(authRequest, context.RequestAborted);
+                var body = await response.Content.ReadAsStringAsync(context.RequestAborted);
+
+                if (!response.IsSuccessStatusCode || !AuthSessionValidation.HasAuthenticatedUser(body))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(
+                        JsonSerializer.Serialize(new { error = "Auth session validation failed." }),
+                        context.RequestAborted);
+                    return;
+                }
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (HttpRequestException)
+            {
+                await AuthSessionValidation.WriteUnavailableAsync(context);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                await AuthSessionValidation.WriteUnavailableAsync(context);
+                return;
+            }
+            catch (JsonException)
+            {
+                await AuthSessionValidation.WriteUnavailableAsync(context);
+                return;
+            }
+        }
+    }
+
+    await next(context);
+});
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-app.MapPost("/media/upload-requests", (
+// Direct file upload – Bearer token validated locally (JWT) + verified with Auth service
+app.MapPost("/media/upload", async (
         ClaimsPrincipal user,
-        UploadRequest request,
-        IOptions<UploadStorageOptions> options) =>
+        HttpRequest request,
+        IOptions<UploadStorageOptions> options,
+        CancellationToken cancellationToken) =>
     {
-        var metadata = UploadSecurity.ValidateMetadata(request.FileName, request.ContentType, request.Size);
+        if (!request.HasFormContentType)
+        {
+            return Results.BadRequest(new { error = "multipart/form-data is required." });
+        }
+
+        var form = await request.ReadFormAsync(cancellationToken);
+        var file = form.Files.GetFile("file");
+        if (file is null)
+        {
+            return Results.BadRequest(new { error = "File field 'file' is required." });
+        }
+
+        var metadata = UploadSecurity.ValidateMetadata(file.FileName, file.ContentType, file.Length);
         if (!metadata.IsAllowed)
         {
             return Results.BadRequest(new { error = metadata.Error });
         }
 
-        var id = Guid.NewGuid().ToString("N");
-        var ticket = UploadTicket.Create(
-            id,
-            UserIdFromClaims(user),
-            request.FileName.Trim(),
-            request.ContentType.Trim(),
-            request.Size,
-            DateTimeOffset.UtcNow.AddMinutes(options.Value.UploadLinkMinutes));
-
-        UploadTickets.Save(ticket);
-        var uploadUrl = $"/media/uploads/{ticket.Id}?token={Uri.EscapeDataString(ticket.Token)}";
-        return Results.Created(uploadUrl, new UploadRequestResponse(
-            ticket.Id,
-            uploadUrl,
-            ticket.ExpiresAt,
-            UploadSecurity.MaxUploadBytes));
+        var stored = await UploadSecurity.StoreValidatedFileAsync(file, options.Value, cancellationToken);
+        return stored.IsAllowed && stored.Response is not null
+            ? Results.Ok(stored.Response)
+            : Results.BadRequest(new { error = stored.Error });
     })
-    .RequireAuthorization();
+    .RequireAuthorization()
+    .DisableAntiforgery();
 
-app.MapPut("/media/uploads/{uploadId}", UploadAsync).DisableAntiforgery();
-app.MapPost("/media/uploads/{uploadId}", UploadAsync).DisableAntiforgery();
+// Batch upload – multiple files in a single request
+app.MapPost("/media/upload-multiple", async (
+        ClaimsPrincipal user,
+        HttpRequest request,
+        IOptions<UploadStorageOptions> options,
+        CancellationToken cancellationToken) =>
+    {
+        if (!request.HasFormContentType)
+        {
+            return Results.BadRequest(new { error = "multipart/form-data is required." });
+        }
 
+        var form = await request.ReadFormAsync(cancellationToken);
+        if (form.Files.Count == 0)
+        {
+            return Results.BadRequest(new { error = "At least one file is required." });
+        }
+
+        if (form.Files.Count > 10)
+        {
+            return Results.BadRequest(new { error = "Maximum 10 files per upload." });
+        }
+
+        var results = new List<object>();
+        var hasErrors = false;
+
+        foreach (var file in form.Files)
+        {
+            var metadata = UploadSecurity.ValidateMetadata(file.FileName, file.ContentType, file.Length);
+            if (!metadata.IsAllowed)
+            {
+                results.Add(new { name = file.FileName, error = metadata.Error });
+                hasErrors = true;
+                continue;
+            }
+
+            var stored = await UploadSecurity.StoreValidatedFileAsync(file, options.Value, cancellationToken);
+            if (stored.IsAllowed && stored.Response is not null)
+            {
+                results.Add(new
+                {
+                    name = file.FileName,
+                    url = stored.Response.Url,
+                    type = stored.Response.Type,
+                    contentType = stored.Response.ContentType,
+                    size = stored.Response.Size
+                });
+            }
+            else
+            {
+                results.Add(new { name = file.FileName, error = stored.Error });
+                hasErrors = true;
+            }
+        }
+
+        return hasErrors
+            ? Results.Json(new { files = results, hasErrors = true }, statusCode: 207)
+            : Results.Ok(new { files = results, hasErrors = false });
+    })
+    .RequireAuthorization()
+    .DisableAntiforgery();
+
+// Serve uploaded files
 app.MapGet("/media/files/{fileName}", (string fileName, IOptions<UploadStorageOptions> options) =>
 {
     if (!UploadSecurity.IsSafeLeafFileName(fileName))
@@ -118,40 +255,9 @@ app.MapGet("/media/files/{fileName}", (string fileName, IOptions<UploadStorageOp
 
 app.Run();
 
-static async Task<IResult> UploadAsync(
-    string uploadId,
-    string token,
-    HttpRequest request,
-    IOptions<UploadStorageOptions> options,
-    CancellationToken cancellationToken)
-{
-    if (!UploadTickets.TryConsume(uploadId, token, out var ticket))
-    {
-        return Results.BadRequest(new { error = "Upload link is invalid or expired." });
-    }
+public partial class Program;
 
-    if (!request.HasFormContentType)
-    {
-        return Results.BadRequest(new { error = "multipart/form-data is required." });
-    }
-
-    var form = await request.ReadFormAsync(cancellationToken);
-    var file = form.Files.GetFile("file");
-    if (file is null)
-    {
-        return Results.BadRequest(new { error = "File field is required." });
-    }
-
-    var stored = await UploadSecurity.StoreValidatedFileAsync(file, ticket, options.Value, cancellationToken);
-    return stored.IsAllowed && stored.Response is not null
-        ? Results.Created(stored.Response.Url, stored.Response)
-        : Results.BadRequest(new { error = stored.Error });
-}
-
-static string UserIdFromClaims(ClaimsPrincipal user) =>
-    user.FindFirst("user_id")?.Value ??
-    user.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
-    "unknown";
+// --- Configuration Options ---
 
 public sealed class JwtOptions
 {
@@ -165,68 +271,52 @@ public sealed class UploadStorageOptions
 {
     public const string SectionName = "UploadStorage";
     public string RootPath { get; init; } = ".data/media";
-    public int UploadLinkMinutes { get; init; } = 10;
 }
 
-public sealed record UploadRequest(string FileName, string ContentType, long Size);
+public sealed class AuthServiceOptions
+{
+    public const string SectionName = "AuthService";
+    public string Url { get; init; } = "http://localhost:5001/graphql";
+}
 
-public sealed record UploadRequestResponse(string UploadId, string UploadUrl, DateTimeOffset ExpiresAt, long MaxSize);
+// --- Response Records ---
 
 public sealed record MediaUploadResponse(string Url, string Type, string ContentType, long Size, string Name);
 
-public sealed record MessageAttachmentDto(string Url, string Type, string ContentType, long Size, string Name);
-
-internal sealed record UploadTicket(
-    string Id,
-    string Token,
-    string UserId,
-    string OriginalName,
-    string ContentType,
-    long ExpectedSize,
-    DateTimeOffset ExpiresAt)
+internal static class AuthSessionValidation
 {
-    public static UploadTicket Create(
-        string id,
-        string userId,
-        string originalName,
-        string contentType,
-        long expectedSize,
-        DateTimeOffset expiresAt)
+    public static async Task WriteUnavailableAsync(HttpContext context)
     {
-        Span<byte> bytes = stackalloc byte[32];
-        RandomNumberGenerator.Fill(bytes);
-        return new UploadTicket(id, Convert.ToBase64String(bytes), userId, originalName, contentType, expectedSize, expiresAt);
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(
+            JsonSerializer.Serialize(new { error = "Auth service unavailable." }),
+            context.RequestAborted);
     }
-}
 
-internal static class UploadTickets
-{
-    private static readonly ConcurrentDictionary<string, UploadTicket> Tickets = new();
-
-    public static void Save(UploadTicket ticket) => Tickets[ticket.Id] = ticket;
-
-    public static bool TryConsume(string id, string token, out UploadTicket ticket)
+    public static bool HasAuthenticatedUser(string responseBody)
     {
-        ticket = null!;
-        if (!Tickets.TryRemove(id, out var found) ||
-            found.ExpiresAt <= DateTimeOffset.UtcNow ||
-            !FixedTimeEquals(found.Token, token))
+        using var document = JsonDocument.Parse(responseBody);
+        var root = document.RootElement;
+
+        if (root.TryGetProperty("errors", out var errors) &&
+            errors.ValueKind == JsonValueKind.Array &&
+            errors.GetArrayLength() > 0)
         {
             return false;
         }
 
-        ticket = found;
-        return true;
-    }
-
-    private static bool FixedTimeEquals(string left, string right)
-    {
-        var leftBytes = Encoding.UTF8.GetBytes(left);
-        var rightBytes = Encoding.UTF8.GetBytes(right);
-        return leftBytes.Length == rightBytes.Length &&
-               CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+        return root.TryGetProperty("data", out var data) &&
+               data.ValueKind == JsonValueKind.Object &&
+               data.TryGetProperty("me", out var me) &&
+               me.ValueKind == JsonValueKind.Object &&
+               me.TryGetProperty("userId", out var userId) &&
+               userId.ValueKind is JsonValueKind.Number or JsonValueKind.String &&
+               !string.IsNullOrWhiteSpace(userId.ToString());
     }
 }
+
+// --- Upload Security ---
 
 internal static class UploadSecurity
 {
@@ -276,7 +366,6 @@ internal static class UploadSecurity
 
     public static async Task<UploadValidationResult> StoreValidatedFileAsync(
         IFormFile file,
-        UploadTicket ticket,
         UploadStorageOptions options,
         CancellationToken cancellationToken)
     {
@@ -284,16 +373,6 @@ internal static class UploadSecurity
         if (!metadata.IsAllowed)
         {
             return UploadValidationResult.Rejected(metadata.Error);
-        }
-
-        if (!string.Equals(NormalizeContentType(file.ContentType), NormalizeContentType(ticket.ContentType), StringComparison.OrdinalIgnoreCase))
-        {
-            return UploadValidationResult.Rejected("Uploaded content type does not match the issued upload link.");
-        }
-
-        if (ticket.ExpectedSize > 0 && file.Length != ticket.ExpectedSize)
-        {
-            return UploadValidationResult.Rejected("Uploaded file size does not match the issued upload link.");
         }
 
         await using var input = file.OpenReadStream();
