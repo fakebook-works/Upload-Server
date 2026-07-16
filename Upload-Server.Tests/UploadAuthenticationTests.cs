@@ -53,7 +53,35 @@ public sealed class UploadAuthenticationTests
         }
     }
 
-    private static string CreateToken()
+    [Fact]
+    public async Task Upload_rejects_token_without_session_id_before_calling_auth()
+    {
+        await using var factory = new UploadServerFactory(Path.GetTempPath());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            CreateToken(includeSessionId: false));
+
+        using var response = await client.PostAsync("/media/upload", CreatePngForm());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, factory.AuthHandler.CallCount);
+    }
+
+    [Fact]
+    public async Task Upload_rejects_auth_response_for_a_different_user()
+    {
+        await using var factory = new UploadServerFactory(Path.GetTempPath(), authUserId: 43);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+        using var response = await client.PostAsync("/media/upload", CreatePngForm());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(1, factory.AuthHandler.CallCount);
+    }
+
+    private static string CreateToken(bool includeSessionId = true)
     {
         var credentials = new SigningCredentials(
             new SymmetricSecurityKey(Encoding.UTF8.GetBytes(SigningKey)),
@@ -61,15 +89,30 @@ public sealed class UploadAuthenticationTests
         var token = new JwtSecurityToken(
             issuer: "fakebook-auth",
             audience: "fakebook",
-            claims: [new Claim("user_id", "42")],
+            claims: includeSessionId
+                ? [new Claim("user_id", "42"), new Claim("sid", "84")]
+                : [new Claim("user_id", "42")],
             expires: DateTime.UtcNow.AddMinutes(5),
             signingCredentials: credentials);
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    private sealed class UploadServerFactory(string storageRoot) : WebApplicationFactory<Program>
+    private static MultipartFormDataContent CreatePngForm()
     {
-        public AuthContractHandler AuthHandler { get; } = new();
+        var content = new MultipartFormDataContent();
+        var png = new ByteArrayContent(
+        [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x00
+        ]);
+        png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+        content.Add(png, "file", "avatar.png");
+        return content;
+    }
+
+    private sealed class UploadServerFactory(string storageRoot, long authUserId = 42) : WebApplicationFactory<Program>
+    {
+        public AuthContractHandler AuthHandler { get; } = new(authUserId);
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -100,18 +143,20 @@ public sealed class UploadAuthenticationTests
         }
     }
 
-    private sealed class AuthContractHandler : HttpMessageHandler
+    private sealed class AuthContractHandler(long authUserId) : HttpMessageHandler
     {
         public string LastQuery { get; private set; } = string.Empty;
+        public int CallCount { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            CallCount++;
             LastQuery = await request.Content!.ReadAsStringAsync(cancellationToken);
             var validContract = LastQuery.Contains("me { userId }", StringComparison.Ordinal);
             var json = validContract
-                ? "{\"data\":{\"me\":{\"userId\":42}}}"
+                ? $"{{\"data\":{{\"me\":{{\"userId\":{authUserId}}}}}}}"
                 : "{\"errors\":[{\"message\":\"Cannot query field 'id' on type 'User'.\"}]}";
 
             return new HttpResponseMessage(HttpStatusCode.OK)

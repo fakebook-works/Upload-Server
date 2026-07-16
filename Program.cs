@@ -24,11 +24,11 @@ builder.Services
 builder.Services
     .AddOptions<JwtOptions>()
     .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
+    .Validate(options => !string.IsNullOrWhiteSpace(options.Issuer), "Jwt:Issuer is required.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.Audience), "Jwt:Audience is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey), "Jwt:SigningKey is required.")
     .Validate(options => Encoding.UTF8.GetByteCount(options.SigningKey) >= 32, "Jwt:SigningKey must be at least 32 bytes.")
     .ValidateOnStart();
-
-var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
 
 builder.Services.AddCors(options =>
 {
@@ -46,8 +46,13 @@ builder.Services.AddCors(options =>
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer();
+
+builder.Services
+    .AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<IOptions<JwtOptions>>((options, configuredJwtOptions) =>
     {
+        var jwtOptions = configuredJwtOptions.Value;
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -60,7 +65,23 @@ builder.Services
             ValidateLifetime = true,
             RequireExpirationTime = true,
             ClockSkew = TimeSpan.Zero,
-            NameClaimType = "username"
+            NameClaimType = "user_id"
+        };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = context =>
+            {
+                if (!UploadIdentity.TryGetPositiveInt64Claim(context.Principal, "user_id", out _))
+                {
+                    context.Fail("The access token does not contain a valid user_id claim.");
+                }
+                else if (!UploadIdentity.TryGetPositiveInt64Claim(context.Principal, "sid", out _))
+                {
+                    context.Fail("The access token does not contain a valid sid claim.");
+                }
+
+                return Task.CompletedTask;
+            }
         };
     });
 
@@ -81,6 +102,12 @@ app.Use(async (context, next) =>
 {
     if (context.User.Identity?.IsAuthenticated == true)
     {
+        if (!UploadIdentity.TryGetPositiveInt64Claim(context.User, "user_id", out var tokenUserId))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
         var authOptions = context.RequestServices.GetRequiredService<IOptions<AuthServiceOptions>>().Value;
         var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
         var client = httpClientFactory.CreateClient("auth-service");
@@ -103,7 +130,7 @@ app.Use(async (context, next) =>
                 using var response = await client.SendAsync(authRequest, context.RequestAborted);
                 var body = await response.Content.ReadAsStringAsync(context.RequestAborted);
 
-                if (!response.IsSuccessStatusCode || !AuthSessionValidation.HasAuthenticatedUser(body))
+                if (!response.IsSuccessStatusCode || !AuthSessionValidation.HasAuthenticatedUser(body, tokenUserId))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     context.Response.ContentType = "application/json";
@@ -276,7 +303,7 @@ public sealed class UploadStorageOptions
 public sealed class AuthServiceOptions
 {
     public const string SectionName = "AuthService";
-    public string Url { get; init; } = "http://localhost:5001/graphql";
+    public string Url { get; init; } = "http://localhost:1001/graphql";
 }
 
 // --- Response Records ---
@@ -294,7 +321,7 @@ internal static class AuthSessionValidation
             context.RequestAborted);
     }
 
-    public static bool HasAuthenticatedUser(string responseBody)
+    public static bool HasAuthenticatedUser(string responseBody, long expectedUserId)
     {
         using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
@@ -306,13 +333,36 @@ internal static class AuthSessionValidation
             return false;
         }
 
-        return root.TryGetProperty("data", out var data) &&
-               data.ValueKind == JsonValueKind.Object &&
-               data.TryGetProperty("me", out var me) &&
-               me.ValueKind == JsonValueKind.Object &&
-               me.TryGetProperty("userId", out var userId) &&
-               userId.ValueKind is JsonValueKind.Number or JsonValueKind.String &&
-               !string.IsNullOrWhiteSpace(userId.ToString());
+        if (!root.TryGetProperty("data", out var data) ||
+            data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("me", out var me) ||
+            me.ValueKind != JsonValueKind.Object ||
+            !me.TryGetProperty("userId", out var userId))
+        {
+            return false;
+        }
+
+        return userId.ValueKind switch
+        {
+            JsonValueKind.Number => userId.TryGetInt64(out var numericUserId) && numericUserId == expectedUserId,
+            JsonValueKind.String => long.TryParse(userId.GetString(), out var stringUserId) && stringUserId == expectedUserId,
+            _ => false
+        };
+    }
+}
+
+internal static class UploadIdentity
+{
+    public static bool TryGetPositiveInt64Claim(
+        ClaimsPrincipal? principal,
+        string claimType,
+        out long value)
+    {
+        value = 0;
+        var claims = principal?.FindAll(claimType).ToArray();
+        return claims is { Length: 1 } &&
+               long.TryParse(claims[0].Value, out value) &&
+               value > 0;
     }
 }
 

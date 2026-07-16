@@ -15,7 +15,7 @@ Create `appsettings.Development.json` from `appsettings.example.json` and config
 dotnet run --launch-profile http
 ```
 
-Default URL: `http://localhost:5050`
+Default URL: `http://localhost:4001`
 
 ## Flow
 
@@ -26,6 +26,10 @@ Default URL: `http://localhost:5050`
 5. Frontend sends that URL in a supported Gateway post/story mutation; SocialGraph persists it and returns it in later feed/story queries.
 
 Batch upload is available at `POST /media/upload-multiple` with up to 10 files.
+
+JWT bearer validation is configured through the options pipeline rather than reading
+the signing key during top-level startup. This keeps production validation strict and
+allows integration tests or environment providers to supply configuration correctly.
 
 ## Security Checks
 
