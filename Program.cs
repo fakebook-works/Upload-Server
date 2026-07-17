@@ -13,6 +13,13 @@ builder.Services
     .Bind(builder.Configuration.GetSection(UploadStorageOptions.SectionName));
 
 builder.Services
+    .AddOptions<UploadInternalApiOptions>()
+    .Bind(builder.Configuration.GetSection(UploadInternalApiOptions.SectionName));
+
+builder.Services.AddSingleton<UploadAssetStore>();
+builder.Services.AddHostedService<UploadAssetCleanupService>();
+
+builder.Services
     .AddOptions<AuthServiceOptions>()
     .Bind(builder.Configuration.GetSection(AuthServiceOptions.SectionName))
     .Validate(
@@ -172,6 +179,7 @@ app.MapPost("/media/upload", async (
         ClaimsPrincipal user,
         HttpRequest request,
         IOptions<UploadStorageOptions> options,
+        UploadAssetStore assetStore,
         CancellationToken cancellationToken) =>
     {
         if (!request.HasFormContentType)
@@ -192,7 +200,12 @@ app.MapPost("/media/upload", async (
             return Results.BadRequest(new { error = metadata.Error });
         }
 
-        var stored = await UploadSecurity.StoreValidatedFileAsync(file, options.Value, cancellationToken);
+        if (!UploadIdentity.TryGetPositiveInt64Claim(user, "user_id", out var ownerUserId))
+        {
+            return Results.Unauthorized();
+        }
+
+        var stored = await UploadSecurity.StoreValidatedFileAsync(file, ownerUserId, options.Value, assetStore, cancellationToken);
         return stored.IsAllowed && stored.Response is not null
             ? Results.Ok(stored.Response)
             : Results.BadRequest(new { error = stored.Error });
@@ -205,6 +218,7 @@ app.MapPost("/media/upload-multiple", async (
         ClaimsPrincipal user,
         HttpRequest request,
         IOptions<UploadStorageOptions> options,
+        UploadAssetStore assetStore,
         CancellationToken cancellationToken) =>
     {
         if (!request.HasFormContentType)
@@ -225,6 +239,10 @@ app.MapPost("/media/upload-multiple", async (
 
         var results = new List<object>();
         var hasErrors = false;
+        if (!UploadIdentity.TryGetPositiveInt64Claim(user, "user_id", out var ownerUserId))
+        {
+            return Results.Unauthorized();
+        }
 
         foreach (var file in form.Files)
         {
@@ -236,7 +254,7 @@ app.MapPost("/media/upload-multiple", async (
                 continue;
             }
 
-            var stored = await UploadSecurity.StoreValidatedFileAsync(file, options.Value, cancellationToken);
+            var stored = await UploadSecurity.StoreValidatedFileAsync(file, ownerUserId, options.Value, assetStore, cancellationToken);
             if (stored.IsAllowed && stored.Response is not null)
             {
                 results.Add(new
@@ -245,7 +263,10 @@ app.MapPost("/media/upload-multiple", async (
                     url = stored.Response.Url,
                     type = stored.Response.Type,
                     contentType = stored.Response.ContentType,
-                    size = stored.Response.Size
+                    size = stored.Response.Size,
+                    assetId = stored.Response.AssetId,
+                    state = stored.Response.State,
+                    expiresAt = stored.Response.ExpiresAt
                 });
             }
             else
@@ -261,6 +282,67 @@ app.MapPost("/media/upload-multiple", async (
     })
     .RequireAuthorization()
     .DisableAntiforgery();
+
+app.MapDelete("/media/assets/{assetId}", async (
+        string assetId,
+        ClaimsPrincipal user,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    {
+        if (!UploadIdentity.TryGetPositiveInt64Claim(user, "user_id", out var ownerUserId))
+        {
+            return Results.Unauthorized();
+        }
+        return await assetStore.DeletePendingOwnedAsync(assetId, ownerUserId, cancellationToken)
+            ? Results.NoContent()
+            : Results.NotFound();
+    })
+    .RequireAuthorization();
+
+app.MapPost("/media/assets/finalize", async (
+        MediaAssetIdsRequest body,
+        ClaimsPrincipal user,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    {
+        if (!UploadIdentity.TryGetPositiveInt64Claim(user, "user_id", out var ownerUserId))
+        {
+            return Results.Unauthorized();
+        }
+        var count = await assetStore.FinalizeOwnedAsync(body.AssetIds ?? Array.Empty<string>(), ownerUserId, cancellationToken);
+        return Results.Ok(new { finalized = count });
+    })
+    .RequireAuthorization();
+
+app.MapPost("/internal/media/finalize", async (
+        MediaUrlsRequest body,
+        HttpRequest request,
+        IOptions<UploadInternalApiOptions> internalOptions,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    {
+        if (!UploadInternalAuthentication.IsAuthorized(request, internalOptions.Value))
+        {
+            return Results.Unauthorized();
+        }
+        var count = await assetStore.FinalizeAsync(body.Urls ?? Array.Empty<string>(), cancellationToken);
+        return Results.Ok(new { finalized = count });
+    });
+
+app.MapPost("/internal/media/delete", async (
+        MediaUrlsRequest body,
+        HttpRequest request,
+        IOptions<UploadInternalApiOptions> internalOptions,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    {
+        if (!UploadInternalAuthentication.IsAuthorized(request, internalOptions.Value))
+        {
+            return Results.Unauthorized();
+        }
+        var count = await assetStore.DeleteByUrlsAsync(body.Urls ?? Array.Empty<string>(), cancellationToken);
+        return Results.Ok(new { deleted = count });
+    });
 
 // Serve uploaded files
 app.MapGet("/media/files/{fileName}", (string fileName, IOptions<UploadStorageOptions> options) =>
@@ -298,6 +380,15 @@ public sealed class UploadStorageOptions
 {
     public const string SectionName = "UploadStorage";
     public string RootPath { get; init; } = ".data/media";
+    public bool StagedUploadsEnabled { get; init; }
+    public int PendingLifetimeMinutes { get; init; } = 1_440;
+    public int CleanupIntervalMinutes { get; init; } = 10;
+}
+
+public sealed class UploadInternalApiOptions
+{
+    public const string SectionName = "InternalApi";
+    public string SharedSecret { get; init; } = string.Empty;
 }
 
 public sealed class AuthServiceOptions
@@ -308,7 +399,37 @@ public sealed class AuthServiceOptions
 
 // --- Response Records ---
 
-public sealed record MediaUploadResponse(string Url, string Type, string ContentType, long Size, string Name);
+public sealed record MediaUploadResponse(
+    string Url,
+    string Type,
+    string ContentType,
+    long Size,
+    string Name,
+    string AssetId,
+    string State,
+    DateTimeOffset? ExpiresAt);
+
+public sealed record MediaUrlsRequest(IReadOnlyList<string>? Urls);
+public sealed record MediaAssetIdsRequest(IReadOnlyList<string>? AssetIds);
+
+internal static class UploadInternalAuthentication
+{
+    private const string HeaderName = "X-Internal-UploadService-Secret";
+
+    public static bool IsAuthorized(HttpRequest request, UploadInternalApiOptions options)
+    {
+        var expected = options.SharedSecret ?? string.Empty;
+        if (Encoding.UTF8.GetByteCount(expected) < 32 ||
+            !request.Headers.TryGetValue(HeaderName, out var provided))
+        {
+            return false;
+        }
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var providedBytes = Encoding.UTF8.GetBytes(provided.ToString());
+        return expectedBytes.Length == providedBytes.Length &&
+               System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
+    }
+}
 
 internal static class AuthSessionValidation
 {
@@ -416,7 +537,9 @@ internal static class UploadSecurity
 
     public static async Task<UploadValidationResult> StoreValidatedFileAsync(
         IFormFile file,
+        long ownerUserId,
         UploadStorageOptions options,
+        UploadAssetStore assetStore,
         CancellationToken cancellationToken)
     {
         var metadata = ValidateMetadata(file.FileName, file.ContentType, file.Length);
@@ -455,17 +578,40 @@ internal static class UploadSecurity
             return UploadValidationResult.Rejected("Invalid storage path.");
         }
 
-        await using (var output = File.Create(destination))
+        try
         {
-            await input.CopyToAsync(output, cancellationToken);
-        }
+            await using (var output = File.Create(destination))
+            {
+                await input.CopyToAsync(output, cancellationToken);
+            }
 
-        return UploadValidationResult.Accepted(new MediaUploadResponse(
-            $"/media/files/{storedName}",
-            kind.Category,
-            contentType,
-            file.Length,
-            IOPath.GetFileName(file.FileName)));
+            var metadataRecord = await assetStore.RegisterAsync(
+                storedName,
+                ownerUserId,
+                IOPath.GetFileName(file.FileName),
+                contentType,
+                file.Length,
+                cancellationToken);
+
+            return UploadValidationResult.Accepted(new MediaUploadResponse(
+                $"/media/files/{storedName}",
+                kind.Category,
+                contentType,
+                file.Length,
+                IOPath.GetFileName(file.FileName),
+                metadataRecord.AssetId,
+                metadataRecord.State,
+                metadataRecord.ExpiresAt));
+        }
+        catch
+        {
+            if (File.Exists(destination))
+            {
+                File.Delete(destination);
+            }
+
+            throw;
+        }
     }
 
     public static MetadataValidation AuditPayload(string contentType, byte[] head)

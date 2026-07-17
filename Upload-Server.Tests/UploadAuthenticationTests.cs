@@ -1,19 +1,23 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
 public sealed class UploadAuthenticationTests
 {
     private const string SigningKey = "test-signing-key-at-least-thirty-two-bytes-long";
+    private const string InternalSecret = "test-upload-internal-secret-at-least-thirty-two-bytes";
 
     [Fact]
     public async Task Upload_uses_public_auth_me_userId_contract()
@@ -81,6 +85,78 @@ public sealed class UploadAuthenticationTests
         Assert.Equal(1, factory.AuthHandler.CallCount);
     }
 
+    [Fact]
+    public async Task Staged_asset_can_only_be_finalized_and_deleted_with_internal_secret()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+            using var uploadResponse = await client.PostAsync("/media/upload", CreatePngForm());
+            uploadResponse.EnsureSuccessStatusCode();
+            using var uploaded = JsonDocument.Parse(await uploadResponse.Content.ReadAsStringAsync());
+            var url = uploaded.RootElement.GetProperty("url").GetString()!;
+            var assetId = uploaded.RootElement.GetProperty("assetId").GetString()!;
+            Assert.Equal("pending", uploaded.RootElement.GetProperty("state").GetString());
+
+            client.DefaultRequestHeaders.Authorization = null;
+            using var denied = await client.PostAsJsonAsync("/internal/media/finalize", new { urls = new[] { url } });
+            Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+
+            client.DefaultRequestHeaders.Add("X-Internal-UploadService-Secret", InternalSecret);
+            using var finalized = await client.PostAsJsonAsync("/internal/media/finalize", new { urls = new[] { url } });
+            Assert.Equal(HttpStatusCode.OK, finalized.StatusCode);
+
+            client.DefaultRequestHeaders.Remove("X-Internal-UploadService-Secret");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+            using var ownerDelete = await client.DeleteAsync($"/media/assets/{assetId}");
+            Assert.Equal(HttpStatusCode.NotFound, ownerDelete.StatusCode);
+
+            client.DefaultRequestHeaders.Authorization = null;
+            client.DefaultRequestHeaders.Add("X-Internal-UploadService-Secret", InternalSecret);
+            using var deleted = await client.PostAsJsonAsync("/internal/media/delete", new { urls = new[] { url } });
+            Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+            using var missing = await client.GetAsync(url);
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FinalizeOwned_does_not_commit_metadata_when_asset_file_is_missing()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            var store = new UploadAssetStore(Options.Create(new UploadStorageOptions
+            {
+                RootPath = storageRoot,
+                StagedUploadsEnabled = true,
+                PendingLifetimeMinutes = 60
+            }));
+            var metadata = await store.RegisterAsync(
+                $"{Guid.NewGuid():N}.png",
+                42,
+                "missing.png",
+                "image/png",
+                10,
+                CancellationToken.None);
+
+            var finalized = await store.FinalizeOwnedAsync([metadata.AssetId], 42, CancellationToken.None);
+
+            Assert.Equal(0, finalized);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
     private static string CreateToken(bool includeSessionId = true)
     {
         var credentials = new SigningCredentials(
@@ -124,7 +200,10 @@ public sealed class UploadAuthenticationTests
                     ["Jwt:Audience"] = "fakebook",
                     ["Jwt:SigningKey"] = SigningKey,
                     ["AuthService:Url"] = "http://auth.test/graphql",
-                    ["UploadStorage:RootPath"] = storageRoot
+                    ["UploadStorage:RootPath"] = storageRoot,
+                    ["UploadStorage:StagedUploadsEnabled"] = "true",
+                    ["UploadStorage:PendingLifetimeMinutes"] = "60",
+                    ["InternalApi:SharedSecret"] = InternalSecret
                 });
             });
 
