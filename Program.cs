@@ -499,8 +499,21 @@ internal static class UploadSecurity
         ["image/png"] = new("image", ".png", [".png"]),
         ["image/gif"] = new("image", ".gif", [".gif"]),
         ["image/webp"] = new("image", ".webp", [".webp"]),
+        ["audio/webm"] = new("audio", ".webm", [".webm"]),
+        ["audio/mp4"] = new("audio", ".m4a", [".m4a", ".mp4"]),
         ["video/mp4"] = new("video", ".mp4", [".mp4"]),
-        ["application/pdf"] = new("file", ".pdf", [".pdf"])
+        ["application/pdf"] = new("file", ".pdf", [".pdf"]),
+        ["application/msword"] = new("file", ".doc", [".doc"]),
+        ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"] = new("file", ".docx", [".docx"]),
+        ["application/vnd.ms-excel"] = new("file", ".xls", [".xls"]),
+        ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] = new("file", ".xlsx", [".xlsx"]),
+        ["application/vnd.ms-powerpoint"] = new("file", ".ppt", [".ppt"]),
+        ["application/vnd.openxmlformats-officedocument.presentationml.presentation"] = new("file", ".pptx", [".pptx"]),
+        ["text/plain"] = new("file", ".txt", [".txt"]),
+        ["text/csv"] = new("file", ".csv", [".csv"]),
+        ["application/csv"] = new("file", ".csv", [".csv"]),
+        ["application/rtf"] = new("file", ".rtf", [".rtf"]),
+        ["text/rtf"] = new("file", ".rtf", [".rtf"])
     };
 
     public static MetadataValidation ValidateMetadata(string? fileName, string? contentType, long size)
@@ -520,7 +533,7 @@ internal static class UploadSecurity
             return MetadataValidation.Rejected($"File size must be between 1 byte and {MaxUploadBytes} bytes.");
         }
 
-        var normalizedContentType = NormalizeContentType(contentType);
+        var normalizedContentType = ResolveAllowedContentType(fileName, contentType);
         if (!AllowedTypes.TryGetValue(normalizedContentType, out var mediaKind))
         {
             return MetadataValidation.Rejected("File type is not allowed.");
@@ -554,7 +567,7 @@ internal static class UploadSecurity
         var read = await input.ReadAsync(head.AsMemory(0, headLength), cancellationToken);
         Array.Resize(ref head, read);
 
-        var contentType = NormalizeContentType(file.ContentType);
+        var contentType = ResolveAllowedContentType(file.FileName, file.ContentType);
         if (!MatchesMagicHeader(contentType, head))
         {
             return UploadValidationResult.Rejected("File content does not match the declared type.");
@@ -675,8 +688,19 @@ internal static class UploadSecurity
             ".png" => "image/png",
             ".gif" => "image/gif",
             ".webp" => "image/webp",
+            ".webm" => "audio/webm",
+            ".m4a" => "audio/mp4",
             ".mp4" => "video/mp4",
             ".pdf" => "application/pdf",
+            ".doc" => "application/msword",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xls" => "application/vnd.ms-excel",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".ppt" => "application/vnd.ms-powerpoint",
+            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".txt" => "text/plain",
+            ".csv" => "text/csv",
+            ".rtf" => "application/rtf",
             _ => "application/octet-stream"
         };
 
@@ -687,16 +711,66 @@ internal static class UploadSecurity
             "image/png" => HasPrefix(head, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
             "image/gif" => head.Length >= 6 && (head.AsSpan(0, 6).SequenceEqual("GIF87a"u8) || head.AsSpan(0, 6).SequenceEqual("GIF89a"u8)),
             "image/webp" => head.Length >= 12 && head.AsSpan(0, 4).SequenceEqual("RIFF"u8) && head.AsSpan(8, 4).SequenceEqual("WEBP"u8),
+            "audio/webm" => HasPrefix(head, 0x1A, 0x45, 0xDF, 0xA3),
+            "audio/mp4" => head.Length >= 12 && head.AsSpan(4, 4).SequenceEqual("ftyp"u8),
             "video/mp4" => head.Length >= 12 && head.AsSpan(4, 4).SequenceEqual("ftyp"u8),
             "application/pdf" => head.Length >= 5 && head.AsSpan(0, 5).SequenceEqual("%PDF-"u8),
+            "application/msword" or
+                "application/vnd.ms-excel" or
+                "application/vnd.ms-powerpoint" => HasPrefix(head, 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation" => IsZipContainer(head),
+            "text/plain" or "text/csv" or "application/csv" => IsLikelyPlainText(head),
+            "application/rtf" or "text/rtf" => HasPrefix(head, 0x7B, 0x5C, 0x72, 0x74, 0x66),
             _ => false
         };
+
+    private static bool IsZipContainer(byte[] head) =>
+        HasPrefix(head, 0x50, 0x4B, 0x03, 0x04) ||
+        HasPrefix(head, 0x50, 0x4B, 0x05, 0x06) ||
+        HasPrefix(head, 0x50, 0x4B, 0x07, 0x08);
+
+    private static bool IsLikelyPlainText(byte[] head)
+    {
+        var start = HasPrefix(head, 0xEF, 0xBB, 0xBF) ? 3 : 0;
+        for (var index = start; index < head.Length; index++)
+        {
+            var value = head[index];
+            if (value == 0 || (value < 0x20 && value is not (0x09 or 0x0A or 0x0D)))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool HasPrefix(byte[] bytes, params byte[] prefix) =>
         bytes.Length >= prefix.Length && bytes.AsSpan(0, prefix.Length).SequenceEqual(prefix);
 
     private static string NormalizeContentType(string? contentType) =>
         (contentType ?? string.Empty).Split(';', 2)[0].Trim().ToLowerInvariant();
+
+    private static string ResolveAllowedContentType(string fileName, string? contentType)
+    {
+        var normalized = NormalizeContentType(contentType);
+        if (AllowedTypes.ContainsKey(normalized))
+        {
+            return normalized;
+        }
+
+        if (normalized is "" or "application/octet-stream" or "application/zip" or "application/x-zip-compressed")
+        {
+            var inferred = ResolveContentTypeFromExtension(IOPath.GetExtension(fileName));
+            if (AllowedTypes.ContainsKey(inferred))
+            {
+                return inferred;
+            }
+        }
+
+        return normalized;
+    }
 
     private sealed record MediaKind(string Category, string StorageExtension, string[] AllowedExtensions);
 }

@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -54,6 +55,64 @@ public sealed class UploadAuthenticationTests
             {
                 Directory.Delete(storageRoot, recursive: true);
             }
+        }
+    }
+
+    [Fact]
+    public async Task Upload_accepts_browser_recorded_webm_audio()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+            using var response = await client.PostAsync("/media/upload", CreateWebmAudioForm());
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var uploaded = JsonDocument.Parse(body);
+            Assert.Equal("audio", uploaded.RootElement.GetProperty("type").GetString());
+            Assert.Equal("audio/webm", uploaded.RootElement.GetProperty("contentType").GetString());
+            Assert.EndsWith(".webm", uploaded.RootElement.GetProperty("url").GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Upload_accepts_office_documents_and_serves_their_content_type()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+            using var response = await client.PostAsync("/media/upload", CreateDocxForm());
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var uploaded = JsonDocument.Parse(body);
+            Assert.Equal("file", uploaded.RootElement.GetProperty("type").GetString());
+            Assert.Equal(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                uploaded.RootElement.GetProperty("contentType").GetString());
+            Assert.Equal("project-plan.docx", uploaded.RootElement.GetProperty("name").GetString());
+
+            using var download = await client.GetAsync(uploaded.RootElement.GetProperty("url").GetString());
+            Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+            Assert.Equal(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                download.Content.Headers.ContentType?.MediaType);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
         }
     }
 
@@ -183,6 +242,46 @@ public sealed class UploadAuthenticationTests
         ]);
         png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         content.Add(png, "file", "avatar.png");
+        return content;
+    }
+
+    private static MultipartFormDataContent CreateWebmAudioForm()
+    {
+        var content = new MultipartFormDataContent();
+        var webm = new ByteArrayContent(
+        [
+            0x1A, 0x45, 0xDF, 0xA3,
+            0x9F, 0x42, 0x86, 0x81,
+            0x01, 0x42, 0xF7, 0x81
+        ]);
+        webm.Headers.ContentType = new MediaTypeHeaderValue("audio/webm");
+        content.Add(webm, "file", "voice-message.webm");
+        return content;
+    }
+
+    private static MultipartFormDataContent CreateDocxForm()
+    {
+        using var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var contentTypes = archive.CreateEntry("[Content_Types].xml");
+            using (var writer = new StreamWriter(contentTypes.Open(), Encoding.UTF8, leaveOpen: false))
+            {
+                writer.Write("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\" />");
+            }
+
+            var document = archive.CreateEntry("word/document.xml");
+            using var documentWriter = new StreamWriter(document.Open(), Encoding.UTF8, leaveOpen: false);
+            documentWriter.Write("<document><body><p>Fakebook project plan</p></body></document>");
+        }
+
+        var content = new MultipartFormDataContent();
+        var docx = new ByteArrayContent(stream.ToArray());
+        // Some Windows/browser combinations report Office files as a generic
+        // binary or ZIP payload. The server must recover the canonical type
+        // from the allow-listed extension and still verify the ZIP signature.
+        docx.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(docx, "file", "project-plan.docx");
         return content;
     }
 
