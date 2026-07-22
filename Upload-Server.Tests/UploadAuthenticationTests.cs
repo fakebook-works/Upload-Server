@@ -84,6 +84,31 @@ public sealed class UploadAuthenticationTests
     }
 
     [Fact]
+    public async Task Upload_accepts_feed_video_above_the_legacy_25mb_limit()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+            using var content = CreateMp4Form(31 * 1024 * 1024);
+
+            using var response = await client.PostAsync("/media/upload", content);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var uploaded = JsonDocument.Parse(body);
+            Assert.Equal("video", uploaded.RootElement.GetProperty("type").GetString());
+            Assert.Equal(31 * 1024 * 1024, uploaded.RootElement.GetProperty("size").GetInt64());
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Upload_accepts_office_documents_and_serves_their_content_type()
     {
         var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
@@ -256,6 +281,20 @@ public sealed class UploadAuthenticationTests
         ]);
         webm.Headers.ContentType = new MediaTypeHeaderValue("audio/webm");
         content.Add(webm, "file", "voice-message.webm");
+        return content;
+    }
+
+    private static MultipartFormDataContent CreateMp4Form(int size)
+    {
+        var bytes = new byte[size];
+        bytes[4] = (byte)'f';
+        bytes[5] = (byte)'t';
+        bytes[6] = (byte)'y';
+        bytes[7] = (byte)'p';
+        var content = new MultipartFormDataContent();
+        var video = new ByteArrayContent(bytes);
+        video.Headers.ContentType = new MediaTypeHeaderValue("video/mp4");
+        content.Add(video, "file", "feed-video.mp4");
         return content;
     }
 

@@ -2,11 +2,21 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using IOPath = System.IO.Path;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = UploadSecurity.MaxRequestBodyBytes;
+});
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = UploadSecurity.MaxRequestBodyBytes;
+});
 
 builder.Services
     .AddOptions<UploadStorageOptions>()
@@ -491,7 +501,9 @@ internal static class UploadIdentity
 
 internal static class UploadSecurity
 {
-    public const long MaxUploadBytes = 25 * 1024 * 1024;
+    public const long MaxStandardUploadBytes = 25 * 1024 * 1024;
+    public const long MaxVideoUploadBytes = 100 * 1024 * 1024;
+    public const long MaxRequestBodyBytes = MaxVideoUploadBytes + (2 * 1024 * 1024);
 
     private static readonly IReadOnlyDictionary<string, MediaKind> AllowedTypes = new Dictionary<string, MediaKind>(StringComparer.OrdinalIgnoreCase)
     {
@@ -528,15 +540,23 @@ internal static class UploadSecurity
             return MetadataValidation.Rejected("File name contains an unsafe path.");
         }
 
-        if (size <= 0 || size > MaxUploadBytes)
+        if (size <= 0)
         {
-            return MetadataValidation.Rejected($"File size must be between 1 byte and {MaxUploadBytes} bytes.");
+            return MetadataValidation.Rejected("File size must be at least 1 byte.");
         }
 
         var normalizedContentType = ResolveAllowedContentType(fileName, contentType);
         if (!AllowedTypes.TryGetValue(normalizedContentType, out var mediaKind))
         {
             return MetadataValidation.Rejected("File type is not allowed.");
+        }
+
+        var maxUploadBytes = normalizedContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+            ? MaxVideoUploadBytes
+            : MaxStandardUploadBytes;
+        if (size > maxUploadBytes)
+        {
+            return MetadataValidation.Rejected($"File size must not exceed {maxUploadBytes} bytes.");
         }
 
         var extension = IOPath.GetExtension(fileName);
