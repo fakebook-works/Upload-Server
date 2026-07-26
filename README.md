@@ -32,6 +32,8 @@ Default URL: `http://localhost:4001`
 
 Batch upload is available at `POST /media/upload-multiple` with up to 10 files.
 
+A staged upload is finalized with `POST /media/assets/finalize`.
+
 The authenticated owner may cancel a still-pending upload with `DELETE /media/assets/{assetId}`. Internal lifecycle calls use `POST /internal/media/finalize` and `POST /internal/media/delete` with `X-Internal-UploadService-Secret`.
 
 JWT bearer validation is configured through the options pipeline rather than reading
@@ -42,9 +44,9 @@ allows integration tests or environment providers to supply configuration correc
 
 - Rejects path traversal and non-leaf filenames.
 - Rejects disallowed extensions and MIME types.
-- Enforces max upload size.
+- Enforces max upload size (image max 25MB, video max 100MB, max request body 102MB).
 - Requires a valid JWT and active Authentication session.
-- Validates magic headers for JPEG, PNG, GIF, WebP, MP4, and PDF.
+- Validates magic headers for JPEG, PNG, GIF, WebP, MP4, audio, and PDF.
 - Rejects executable `MZ` payloads.
 - Rejects active-content/backdoor markers such as scripts, shell execution strings, PHP, PowerShell, and command shells.
 - Rejects image uploads containing SVG/HTML active markup.

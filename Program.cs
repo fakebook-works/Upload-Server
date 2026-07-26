@@ -1,11 +1,15 @@
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using IOPath = System.IO.Path;
+
+const string UploadRateLimitPolicy = "upload";
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +32,40 @@ builder.Services
 
 builder.Services.AddSingleton<UploadAssetStore>();
 builder.Services.AddHostedService<UploadAssetCleanupService>();
+
+builder.Services
+    .AddOptions<UploadRateLimitOptions>()
+    .Bind(builder.Configuration.GetSection(UploadRateLimitOptions.SectionName));
+
+// Per-user throttle for the write endpoints. Media bytes never pass through the
+// Gateway, so this is the only place upload abuse (storage exhaustion, CPU on the
+// content audit) can be bounded. Limits are generous so normal composing never trips.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy(UploadRateLimitPolicy, context =>
+    {
+        var settings = context.RequestServices
+            .GetRequiredService<IOptions<UploadRateLimitOptions>>().Value;
+        if (!settings.Enabled)
+        {
+            return RateLimitPartition.GetNoLimiter("upload-disabled");
+        }
+
+        var window = TimeSpan.FromSeconds(Math.Max(1, settings.WindowSeconds));
+        var partitionKey = UploadIdentity.TryGetPositiveInt64Claim(context.User, "user_id", out var userId)
+            ? $"u:{userId}"
+            : $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown"}";
+
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = Math.Max(1, settings.PermitLimit),
+            Window = window,
+            QueueLimit = 0,
+            AutoReplenishment = true
+        });
+    });
+});
 
 builder.Services
     .AddOptions<AuthServiceOptions>()
@@ -110,9 +148,22 @@ builder.Services.AddHttpClient("auth-service", client =>
 
 var app = builder.Build();
 
+// Served media is user-supplied, so stop browsers from MIME-sniffing a stored file
+// into an executable type regardless of the Content-Type we set on it.
+app.Use(async (context, next) =>
+{
+    context.Response.OnStarting(() =>
+    {
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        return Task.CompletedTask;
+    });
+    await next(context);
+});
+
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 // Validate authenticated sessions against the Auth service
 app.Use(async (context, next) =>
@@ -221,6 +272,7 @@ app.MapPost("/media/upload", async (
             : Results.BadRequest(new { error = stored.Error });
     })
     .RequireAuthorization()
+    .RequireRateLimiting(UploadRateLimitPolicy)
     .DisableAntiforgery();
 
 // Batch upload – multiple files in a single request
@@ -291,6 +343,7 @@ app.MapPost("/media/upload-multiple", async (
             : Results.Ok(new { files = results, hasErrors = false });
     })
     .RequireAuthorization()
+    .RequireRateLimiting(UploadRateLimitPolicy)
     .DisableAntiforgery();
 
 app.MapDelete("/media/assets/{assetId}", async (
@@ -399,6 +452,24 @@ public sealed class UploadInternalApiOptions
 {
     public const string SectionName = "InternalApi";
     public string SharedSecret { get; init; } = string.Empty;
+}
+
+public sealed class UploadRateLimitOptions
+{
+    public const string SectionName = "RateLimit";
+
+    /// <summary>Master switch. When false no limiter is attached to the upload endpoints.</summary>
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>Fixed-window length in seconds.</summary>
+    public int WindowSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// Uploads allowed per window per user (falls back to client IP for anonymous callers,
+    /// which are rejected at authorization anyway). Deliberately generous so a normal
+    /// compose/batch never trips; it caps a single abusive account.
+    /// </summary>
+    public int PermitLimit { get; init; } = 120;
 }
 
 public sealed class AuthServiceOptions
