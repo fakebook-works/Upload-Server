@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Upload-Server.Tests/Upload-Server.Tests.csproj
+
+      - name: Build
+        run: dotnet build Upload-Server.Tests/Upload-Server.Tests.csproj --no-restore --configuration Release
+
+      - name: Test
+        run: >-
+          dotnet test Upload-Server.Tests/Upload-Server.Tests.csproj
+          --no-build
+          --configuration Release
+          --logger "trx;LogFileName=test-results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          if-no-files-found: warn
