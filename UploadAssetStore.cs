@@ -51,7 +51,10 @@ public sealed class UploadAssetStore
         return metadata;
     }
 
-    public async Task<int> FinalizeAsync(IEnumerable<string> urls, CancellationToken cancellationToken)
+    public async Task<int> FinalizeAsync(
+        IEnumerable<string> urls,
+        long? ownerUserId,
+        CancellationToken cancellationToken)
     {
         var finalized = 0;
         await _gate.WaitAsync(cancellationToken);
@@ -61,13 +64,16 @@ public sealed class UploadAssetStore
             {
                 var path = ResolveAssetPath(storedName);
                 if (!File.Exists(path)) continue;
-                var metadata = await ReadUnsafeAsync(storedName, cancellationToken);
+                var metadata = await TryReadUnsafeAsync(storedName, cancellationToken);
                 if (metadata is null)
                 {
                     // Legacy files predate lifecycle metadata and are already durable.
                     finalized++;
                     continue;
                 }
+                // A declared owner is authoritative: never extend the life of another
+                // user's asset just because a URL string was supplied.
+                if (ownerUserId.HasValue && metadata.OwnerUserId != ownerUserId.Value) continue;
                 if (metadata.State != CommittedState || metadata.ExpiresAt is not null)
                 {
                     await WriteUnsafeAsync(metadata with { State = CommittedState, ExpiresAt = null }, cancellationToken);
@@ -82,7 +88,10 @@ public sealed class UploadAssetStore
         return finalized;
     }
 
-    public async Task<int> DeleteByUrlsAsync(IEnumerable<string> urls, CancellationToken cancellationToken)
+    public async Task<int> DeleteByUrlsAsync(
+        IEnumerable<string> urls,
+        long? ownerUserId,
+        CancellationToken cancellationToken)
     {
         var deleted = 0;
         await _gate.WaitAsync(cancellationToken);
@@ -90,6 +99,13 @@ public sealed class UploadAssetStore
         {
             foreach (var storedName in NormalizeStoredNames(urls))
             {
+                if (ownerUserId.HasValue)
+                {
+                    // Owner-scoped deletion fails closed: an asset whose ownership cannot
+                    // be established is never removed on the strength of a URL alone.
+                    var metadata = await TryReadUnsafeAsync(storedName, cancellationToken);
+                    if (metadata is null || metadata.OwnerUserId != ownerUserId.Value) continue;
+                }
                 if (DeleteUnsafe(storedName)) deleted++;
             }
         }
@@ -98,6 +114,46 @@ public sealed class UploadAssetStore
             _gate.Release();
         }
         return deleted;
+    }
+
+    /// <summary>
+    /// Returns the subset of <paramref name="urls"/> that <paramref name="ownerUserId"/> may not
+    /// reference. Callers use this to reject client-supplied media URLs before persisting them,
+    /// so a URL can never be attached to content owned by somebody else.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> FindUnauthorizedUrlsAsync(
+        IEnumerable<string> urls,
+        long ownerUserId,
+        CancellationToken cancellationToken)
+    {
+        var unauthorized = new List<string>();
+        var candidates = urls
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (candidates.Length == 0) return unauthorized;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            foreach (var url in candidates)
+            {
+                var storedName = NormalizeStoredNames(new[] { url }).FirstOrDefault();
+                if (storedName is null)
+                {
+                    // Not a URL this server serves; the caller must not treat it as owned media.
+                    unauthorized.Add(url);
+                    continue;
+                }
+                var metadata = await TryReadUnsafeAsync(storedName, cancellationToken);
+                if (metadata is null || metadata.OwnerUserId != ownerUserId) unauthorized.Add(url);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+        return unauthorized;
     }
 
     public async Task<bool> DeletePendingOwnedAsync(string assetId, long ownerUserId, CancellationToken cancellationToken)
@@ -209,13 +265,25 @@ public sealed class UploadAssetStore
         File.Move(temporary, target, overwrite: true);
     }
 
-    private async Task<UploadAssetMetadata?> ReadUnsafeAsync(string storedName, CancellationToken cancellationToken)
+    /// <summary>
+    /// Reads lifecycle metadata for a stored file, returning null when it is absent or unreadable.
+    /// Legacy assets predate metadata and non-GUID names are rejected by <see cref="ResolveMetadataPath"/>,
+    /// so both are reported as "ownership unknown" rather than throwing.
+    /// </summary>
+    private async Task<UploadAssetMetadata?> TryReadUnsafeAsync(string storedName, CancellationToken cancellationToken)
     {
-        var path = ResolveMetadataPath(storedName);
-        if (!File.Exists(path)) return null;
-        return JsonSerializer.Deserialize<UploadAssetMetadata>(
-            await File.ReadAllTextAsync(path, cancellationToken),
-            JsonOptions);
+        try
+        {
+            var path = ResolveMetadataPath(storedName);
+            if (!File.Exists(path)) return null;
+            return JsonSerializer.Deserialize<UploadAssetMetadata>(
+                await File.ReadAllTextAsync(path, cancellationToken),
+                JsonOptions);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException or IOException)
+        {
+            return null;
+        }
     }
 
     private bool DeleteUnsafe(string storedName)

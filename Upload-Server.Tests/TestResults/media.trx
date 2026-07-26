@@ -1,0 +1,214 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="f38894e7-8ea6-47d2-ab5d-1431053824ff" name="Feldway@DESKTOP-NL8J48I 2026-07-27 05:00:55" runUser="DESKTOP-NL8J48I\Feldway" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-07-27T05:00:55.3666204+07:00" queuing="2026-07-27T05:00:55.3666209+07:00" start="2026-07-27T05:00:54.1642690+07:00" finish="2026-07-27T05:00:56.1208851+07:00" />
+  <TestSettings name="default" id="7a6e9804-6ec8-4549-ae0f-11baa13adb5e">
+    <Deployment runDeploymentRoot="Feldway_DESKTOP-NL8J48I_2026-07-27_05_00_55" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="db130d31-488d-46b9-b5b0-d0136e40017b" testId="3e86503f-5d29-0e18-66d7-a3ae9a91f856" testName="MediaOwnershipTests.Delete_refuses_an_asset_owned_by_another_user" computerName="DESKTOP-NL8J48I" duration="00:00:00.0136214" startTime="2026-07-27T05:00:54.8815007+07:00" endTime="2026-07-27T05:00:54.8815011+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="db130d31-488d-46b9-b5b0-d0136e40017b" />
+    <UnitTestResult executionId="97383b73-971a-4b32-82e6-aafde87c1680" testId="624dd0ef-c663-4fc0-75af-ffa4f450fbef" testName="UploadAuthenticationTests.Staged_asset_can_only_be_finalized_and_deleted_with_internal_secret" computerName="DESKTOP-NL8J48I" duration="00:00:00.0581057" startTime="2026-07-27T05:00:55.8516758+07:00" endTime="2026-07-27T05:00:55.8516760+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="97383b73-971a-4b32-82e6-aafde87c1680" />
+    <UnitTestResult executionId="0218191c-fb12-497d-9825-f6b813ffea07" testId="0efcf9b1-4340-8741-3edc-8f20e08f1615" testName="UploadAuthenticationTests.FinalizeOwned_does_not_commit_metadata_when_asset_file_is_missing" computerName="DESKTOP-NL8J48I" duration="00:00:00.0051709" startTime="2026-07-27T05:00:55.8951528+07:00" endTime="2026-07-27T05:00:55.8951533+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="0218191c-fb12-497d-9825-f6b813ffea07" />
+    <UnitTestResult executionId="8f5f5053-9648-47e2-a29e-40272241b398" testId="2e8c73a9-3587-af18-7760-ef86b5434697" testName="MediaOwnershipTests.Finalize_refuses_to_commit_another_users_pending_asset" computerName="DESKTOP-NL8J48I" duration="00:00:00.0066237" startTime="2026-07-27T05:00:54.9093920+07:00" endTime="2026-07-27T05:00:54.9093924+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="8f5f5053-9648-47e2-a29e-40272241b398" />
+    <UnitTestResult executionId="9b5af38d-3cca-4b4f-892c-85c3ca973509" testId="499b956d-7a09-d61f-76ed-0fd85af0cc55" testName="UploadAuthenticationTests.Upload_accepts_office_documents_and_serves_their_content_type" computerName="DESKTOP-NL8J48I" duration="00:00:00.4296713" startTime="2026-07-27T05:00:55.2310963+07:00" endTime="2026-07-27T05:00:55.2310968+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="9b5af38d-3cca-4b4f-892c-85c3ca973509" />
+    <UnitTestResult executionId="3e2cfb65-922c-4bb7-a40b-ccbd8f6caaa6" testId="0308fbd6-f95e-7caf-44bb-b5b3fc46dc81" testName="UploadAuthenticationTests.Internal_signing_matches_the_documented_cross_language_vectors" computerName="DESKTOP-NL8J48I" duration="00:00:00.0007010" startTime="2026-07-27T05:00:55.9304671+07:00" endTime="2026-07-27T05:00:55.9304672+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3e2cfb65-922c-4bb7-a40b-ccbd8f6caaa6" />
+    <UnitTestResult executionId="c301d331-418c-46ab-803f-decd1359d538" testId="bf5aef0c-84a3-447c-acb6-00a3aa75fa46" testName="UploadAuthenticationTests.Internal_signature_is_required_and_a_nonce_cannot_be_replayed" computerName="DESKTOP-NL8J48I" duration="00:00:00.0625006" startTime="2026-07-27T05:00:55.2939415+07:00" endTime="2026-07-27T05:00:55.2939417+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="c301d331-418c-46ab-803f-decd1359d538" />
+    <UnitTestResult executionId="72254e3a-3245-4327-9ba1-8b54001d76fc" testId="c5d42178-fc8d-b589-5117-032902ec0e5d" testName="UploadAuthenticationTests.Upload_rejects_auth_response_for_a_different_user" computerName="DESKTOP-NL8J48I" duration="00:00:00.0315024" startTime="2026-07-27T05:00:56.0524617+07:00" endTime="2026-07-27T05:00:56.0524620+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="72254e3a-3245-4327-9ba1-8b54001d76fc" />
+    <UnitTestResult executionId="80ac529c-b557-42e8-a311-323be23247ce" testId="88ecebde-00f8-858e-79f3-b90af2aa17f7" testName="UploadAuthenticationTests.Upload_rejects_active_content_after_the_old_8kb_audit_window" computerName="DESKTOP-NL8J48I" duration="00:00:00.0345509" startTime="2026-07-27T05:00:55.9653766+07:00" endTime="2026-07-27T05:00:55.9653768+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="80ac529c-b557-42e8-a311-323be23247ce" />
+    <UnitTestResult executionId="bf70a971-cea8-4006-9c11-82d1515d1386" testId="abdf5c73-322b-9888-d57e-55e154514144" testName="MediaOwnershipTests.Delete_removes_an_asset_owned_by_the_declared_user" computerName="DESKTOP-NL8J48I" duration="00:00:00.0062512" startTime="2026-07-27T05:00:54.9161219+07:00" endTime="2026-07-27T05:00:54.9161224+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="bf70a971-cea8-4006-9c11-82d1515d1386" />
+    <UnitTestResult executionId="a5c82e41-6b74-42c5-8886-bee39c9d72bf" testId="aa87637a-7c01-0ace-2d64-778762125f89" testName="UploadAuthenticationTests.Internal_signing_handler_removes_the_raw_secret_and_covers_the_exact_body" computerName="DESKTOP-NL8J48I" duration="00:00:00.0034354" startTime="2026-07-27T05:00:55.9689297+07:00" endTime="2026-07-27T05:00:55.9689300+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a5c82e41-6b74-42c5-8886-bee39c9d72bf" />
+    <UnitTestResult executionId="af87d664-605c-4b3d-9280-f7d171f88e15" testId="d96099c3-7cc7-c375-8575-095cb6ce6b27" testName="UploadAuthenticationTests.Upload_accepts_feed_video_above_the_legacy_25mb_limit" computerName="DESKTOP-NL8J48I" duration="00:00:00.4985734" startTime="2026-07-27T05:00:55.7930312+07:00" endTime="2026-07-27T05:00:55.7930317+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="af87d664-605c-4b3d-9280-f7d171f88e15" />
+    <UnitTestResult executionId="e092f6e7-5ec7-4cb4-890c-6838b35eff7a" testId="8d43e356-39de-b02a-0aee-5f2f0d68223d" testName="MediaOwnershipTests.Delete_fails_closed_when_ownership_cannot_be_established" computerName="DESKTOP-NL8J48I" duration="00:00:00.0067970" startTime="2026-07-27T05:00:54.9020417+07:00" endTime="2026-07-27T05:00:54.9020424+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e092f6e7-5ec7-4cb4-890c-6838b35eff7a" />
+    <UnitTestResult executionId="35d75f18-4b09-41fb-80cc-da5e449a3e83" testId="1076442c-0349-f935-d25f-5b8e8dc15de9" testName="UploadAuthenticationTests.Upload_accepts_browser_recorded_webm_audio" computerName="DESKTOP-NL8J48I" duration="00:00:00.0341091" startTime="2026-07-27T05:00:55.9296896+07:00" endTime="2026-07-27T05:00:55.9296898+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="35d75f18-4b09-41fb-80cc-da5e449a3e83" />
+    <UnitTestResult executionId="b5fa0a9a-20a1-451b-8150-931ac2261631" testId="95e67eec-da63-adb8-015b-30c36dbb1c5a" testName="UploadAuthenticationTests.Upload_uses_public_auth_me_userId_contract" computerName="DESKTOP-NL8J48I" duration="00:00:00.0513128" startTime="2026-07-27T05:00:56.0206588+07:00" endTime="2026-07-27T05:00:56.0206590+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b5fa0a9a-20a1-451b-8150-931ac2261631" />
+    <UnitTestResult executionId="d9d200f0-7fd7-47fd-9627-10cb7101df0e" testId="663da9b8-239a-40db-208d-8dee2e2380bf" testName="UploadAuthenticationTests.Upload_rejects_token_without_session_id_before_calling_auth" computerName="DESKTOP-NL8J48I" duration="00:00:00.0371834" startTime="2026-07-27T05:00:55.8894885+07:00" endTime="2026-07-27T05:00:55.8894888+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d9d200f0-7fd7-47fd-9627-10cb7101df0e" />
+    <UnitTestResult executionId="7d5993af-de11-4100-b2b3-92ba7da15c71" testId="3b6833f3-af4d-49c8-8bcb-0f6c320fee1c" testName="MediaOwnershipTests.Delete_without_a_declared_owner_still_performs_cascade_cleanup" computerName="DESKTOP-NL8J48I" duration="00:00:00.0555034" startTime="2026-07-27T05:00:54.8618638+07:00" endTime="2026-07-27T05:00:54.8618953+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="7d5993af-de11-4100-b2b3-92ba7da15c71" />
+    <UnitTestResult executionId="65d67d0a-8ec2-4fa3-bab5-053fe89d8cd4" testId="9147c97c-62ea-dfb0-2387-a11f17315532" testName="MediaOwnershipTests.FindUnauthorizedUrls_accepts_an_empty_request" computerName="DESKTOP-NL8J48I" duration="00:00:00.0049054" startTime="2026-07-27T05:00:54.8669369+07:00" endTime="2026-07-27T05:00:54.8669372+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="65d67d0a-8ec2-4fa3-bab5-053fe89d8cd4" />
+    <UnitTestResult executionId="11ded131-9581-4e7d-84c4-dec995ecb803" testId="d00d58a4-8683-17c3-175b-b26d824d3152" testName="MediaOwnershipTests.FindUnauthorizedUrls_reports_foreign_unknown_and_off_server_urls" computerName="DESKTOP-NL8J48I" duration="00:00:00.0124556" startTime="2026-07-27T05:00:54.8946626+07:00" endTime="2026-07-27T05:00:54.8946637+07:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="11ded131-9581-4e7d-84c4-dec995ecb803" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="UploadAuthenticationTests.Upload_accepts_browser_recorded_webm_audio" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="1076442c-0349-f935-d25f-5b8e8dc15de9">
+      <Execution id="35d75f18-4b09-41fb-80cc-da5e449a3e83" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_accepts_browser_recorded_webm_audio" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_rejects_active_content_after_the_old_8kb_audit_window" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="88ecebde-00f8-858e-79f3-b90af2aa17f7">
+      <Execution id="80ac529c-b557-42e8-a311-323be23247ce" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_rejects_active_content_after_the_old_8kb_audit_window" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_rejects_auth_response_for_a_different_user" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="c5d42178-fc8d-b589-5117-032902ec0e5d">
+      <Execution id="72254e3a-3245-4327-9ba1-8b54001d76fc" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_rejects_auth_response_for_a_different_user" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.FindUnauthorizedUrls_reports_foreign_unknown_and_off_server_urls" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="d00d58a4-8683-17c3-175b-b26d824d3152">
+      <Execution id="11ded131-9581-4e7d-84c4-dec995ecb803" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="FindUnauthorizedUrls_reports_foreign_unknown_and_off_server_urls" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.FinalizeOwned_does_not_commit_metadata_when_asset_file_is_missing" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="0efcf9b1-4340-8741-3edc-8f20e08f1615">
+      <Execution id="0218191c-fb12-497d-9825-f6b813ffea07" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="FinalizeOwned_does_not_commit_metadata_when_asset_file_is_missing" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_accepts_feed_video_above_the_legacy_25mb_limit" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="d96099c3-7cc7-c375-8575-095cb6ce6b27">
+      <Execution id="af87d664-605c-4b3d-9280-f7d171f88e15" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_accepts_feed_video_above_the_legacy_25mb_limit" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.Delete_refuses_an_asset_owned_by_another_user" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="3e86503f-5d29-0e18-66d7-a3ae9a91f856">
+      <Execution id="db130d31-488d-46b9-b5b0-d0136e40017b" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="Delete_refuses_an_asset_owned_by_another_user" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Staged_asset_can_only_be_finalized_and_deleted_with_internal_secret" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="624dd0ef-c663-4fc0-75af-ffa4f450fbef">
+      <Execution id="97383b73-971a-4b32-82e6-aafde87c1680" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Staged_asset_can_only_be_finalized_and_deleted_with_internal_secret" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_accepts_office_documents_and_serves_their_content_type" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="499b956d-7a09-d61f-76ed-0fd85af0cc55">
+      <Execution id="9b5af38d-3cca-4b4f-892c-85c3ca973509" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_accepts_office_documents_and_serves_their_content_type" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.Delete_removes_an_asset_owned_by_the_declared_user" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="abdf5c73-322b-9888-d57e-55e154514144">
+      <Execution id="bf70a971-cea8-4006-9c11-82d1515d1386" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="Delete_removes_an_asset_owned_by_the_declared_user" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Internal_signing_handler_removes_the_raw_secret_and_covers_the_exact_body" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="aa87637a-7c01-0ace-2d64-778762125f89">
+      <Execution id="a5c82e41-6b74-42c5-8886-bee39c9d72bf" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Internal_signing_handler_removes_the_raw_secret_and_covers_the_exact_body" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_uses_public_auth_me_userId_contract" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="95e67eec-da63-adb8-015b-30c36dbb1c5a">
+      <Execution id="b5fa0a9a-20a1-451b-8150-931ac2261631" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_uses_public_auth_me_userId_contract" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.Delete_fails_closed_when_ownership_cannot_be_established" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="8d43e356-39de-b02a-0aee-5f2f0d68223d">
+      <Execution id="e092f6e7-5ec7-4cb4-890c-6838b35eff7a" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="Delete_fails_closed_when_ownership_cannot_be_established" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Internal_signing_matches_the_documented_cross_language_vectors" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="0308fbd6-f95e-7caf-44bb-b5b3fc46dc81">
+      <Execution id="3e2cfb65-922c-4bb7-a40b-ccbd8f6caaa6" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Internal_signing_matches_the_documented_cross_language_vectors" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.Finalize_refuses_to_commit_another_users_pending_asset" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="2e8c73a9-3587-af18-7760-ef86b5434697">
+      <Execution id="8f5f5053-9648-47e2-a29e-40272241b398" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="Finalize_refuses_to_commit_another_users_pending_asset" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Internal_signature_is_required_and_a_nonce_cannot_be_replayed" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="bf5aef0c-84a3-447c-acb6-00a3aa75fa46">
+      <Execution id="c301d331-418c-46ab-803f-decd1359d538" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Internal_signature_is_required_and_a_nonce_cannot_be_replayed" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.Delete_without_a_declared_owner_still_performs_cascade_cleanup" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="3b6833f3-af4d-49c8-8bcb-0f6c320fee1c">
+      <Execution id="7d5993af-de11-4100-b2b3-92ba7da15c71" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="Delete_without_a_declared_owner_still_performs_cascade_cleanup" />
+    </UnitTest>
+    <UnitTest name="MediaOwnershipTests.FindUnauthorizedUrls_accepts_an_empty_request" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="9147c97c-62ea-dfb0-2387-a11f17315532">
+      <Execution id="65d67d0a-8ec2-4fa3-bab5-053fe89d8cd4" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="MediaOwnershipTests" name="FindUnauthorizedUrls_accepts_an_empty_request" />
+    </UnitTest>
+    <UnitTest name="UploadAuthenticationTests.Upload_rejects_token_without_session_id_before_calling_auth" storage="d:\fakebook\uploadsever\upload-server\upload-server.tests\bin\debug\net8.0\upload-server.tests.dll" id="663da9b8-239a-40db-208d-8dee2e2380bf">
+      <Execution id="d9d200f0-7fd7-47fd-9627-10cb7101df0e" />
+      <TestMethod codeBase="D:\Fakebook\UploadSever\Upload-Server\Upload-Server.Tests\bin\Debug\net8.0\Upload-Server.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="UploadAuthenticationTests" name="Upload_rejects_token_without_session_id_before_calling_auth" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="3e86503f-5d29-0e18-66d7-a3ae9a91f856" executionId="db130d31-488d-46b9-b5b0-d0136e40017b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="624dd0ef-c663-4fc0-75af-ffa4f450fbef" executionId="97383b73-971a-4b32-82e6-aafde87c1680" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0efcf9b1-4340-8741-3edc-8f20e08f1615" executionId="0218191c-fb12-497d-9825-f6b813ffea07" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="2e8c73a9-3587-af18-7760-ef86b5434697" executionId="8f5f5053-9648-47e2-a29e-40272241b398" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="499b956d-7a09-d61f-76ed-0fd85af0cc55" executionId="9b5af38d-3cca-4b4f-892c-85c3ca973509" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0308fbd6-f95e-7caf-44bb-b5b3fc46dc81" executionId="3e2cfb65-922c-4bb7-a40b-ccbd8f6caaa6" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bf5aef0c-84a3-447c-acb6-00a3aa75fa46" executionId="c301d331-418c-46ab-803f-decd1359d538" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c5d42178-fc8d-b589-5117-032902ec0e5d" executionId="72254e3a-3245-4327-9ba1-8b54001d76fc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="88ecebde-00f8-858e-79f3-b90af2aa17f7" executionId="80ac529c-b557-42e8-a311-323be23247ce" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="abdf5c73-322b-9888-d57e-55e154514144" executionId="bf70a971-cea8-4006-9c11-82d1515d1386" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="aa87637a-7c01-0ace-2d64-778762125f89" executionId="a5c82e41-6b74-42c5-8886-bee39c9d72bf" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="d96099c3-7cc7-c375-8575-095cb6ce6b27" executionId="af87d664-605c-4b3d-9280-f7d171f88e15" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8d43e356-39de-b02a-0aee-5f2f0d68223d" executionId="e092f6e7-5ec7-4cb4-890c-6838b35eff7a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1076442c-0349-f935-d25f-5b8e8dc15de9" executionId="35d75f18-4b09-41fb-80cc-da5e449a3e83" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="95e67eec-da63-adb8-015b-30c36dbb1c5a" executionId="b5fa0a9a-20a1-451b-8150-931ac2261631" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="663da9b8-239a-40db-208d-8dee2e2380bf" executionId="d9d200f0-7fd7-47fd-9627-10cb7101df0e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3b6833f3-af4d-49c8-8bcb-0f6c320fee1c" executionId="7d5993af-de11-4100-b2b3-92ba7da15c71" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9147c97c-62ea-dfb0-2387-a11f17315532" executionId="65d67d0a-8ec2-4fa3-bab5-053fe89d8cd4" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="d00d58a4-8683-17c3-175b-b26d824d3152" executionId="11ded131-9581-4e7d-84c4-dec995ecb803" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="19" executed="19" passed="19" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 8.0.26)&#xD;
+[xUnit.net 00:00:00.11]   Discovering: Upload-Server.Tests&#xD;
+[xUnit.net 00:00:00.14]   Discovered:  Upload-Server.Tests&#xD;
+[xUnit.net 00:00:00.14]   Starting:    Upload-Server.Tests&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 2.0354ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 15.6087ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0389ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.1252ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0267ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.0882ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0301ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.0994ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0265ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.0931ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0299ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.0983ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0378ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.1269ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0284ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.0945ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[100]&#xD;
+      Start processing HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[100]&#xD;
+      Sending HTTP request POST http://auth.test/graphql&#xD;
+info: System.Net.Http.HttpClient.auth-service.ClientHandler[101]&#xD;
+      Received HTTP response headers after 0.0322ms - 200&#xD;
+info: System.Net.Http.HttpClient.auth-service.LogicalHandler[101]&#xD;
+      End processing HTTP request after 0.104ms - 200&#xD;
+[xUnit.net 00:00:01.44]   Finished:    Upload-Server.Tests&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

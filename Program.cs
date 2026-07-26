@@ -394,8 +394,35 @@ app.MapPost("/internal/media/finalize", async (
         {
             return Results.Unauthorized();
         }
-        var count = await assetStore.FinalizeAsync(body.Urls ?? Array.Empty<string>(), cancellationToken);
+        var count = await assetStore.FinalizeAsync(
+            body.Urls ?? Array.Empty<string>(),
+            body.OwnerUserId,
+            cancellationToken);
         return Results.Ok(new { finalized = count });
+    });
+
+// Ownership probe used by domain services before they persist a client-supplied media URL.
+// Without it a caller can attach — and therefore later delete — media owned by another user.
+app.MapPost("/internal/media/authorize", async (
+        MediaUrlsRequest body,
+        HttpRequest request,
+        IOptions<UploadInternalApiOptions> internalOptions,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    {
+        if (!UploadInternalAuthentication.IsAuthorized(request, internalOptions.Value))
+        {
+            return Results.Unauthorized();
+        }
+        if (body.OwnerUserId is not { } ownerUserId)
+        {
+            return Results.BadRequest(new { error = "ownerUserId is required." });
+        }
+        var unauthorized = await assetStore.FindUnauthorizedUrlsAsync(
+            body.Urls ?? Array.Empty<string>(),
+            ownerUserId,
+            cancellationToken);
+        return Results.Ok(new { authorized = unauthorized.Count == 0, unauthorizedUrls = unauthorized });
     });
 
 app.MapPost("/internal/media/delete", async (
@@ -409,7 +436,10 @@ app.MapPost("/internal/media/delete", async (
         {
             return Results.Unauthorized();
         }
-        var count = await assetStore.DeleteByUrlsAsync(body.Urls ?? Array.Empty<string>(), cancellationToken);
+        var count = await assetStore.DeleteByUrlsAsync(
+            body.Urls ?? Array.Empty<string>(),
+            body.OwnerUserId,
+            cancellationToken);
         return Results.Ok(new { deleted = count });
     });
 
@@ -496,7 +526,7 @@ public sealed record MediaUploadResponse(
     string State,
     DateTimeOffset? ExpiresAt);
 
-public sealed record MediaUrlsRequest(IReadOnlyList<string>? Urls);
+public sealed record MediaUrlsRequest(IReadOnlyList<string>? Urls, long? OwnerUserId = null);
 public sealed record MediaAssetIdsRequest(IReadOnlyList<string>? AssetIds);
 
 internal static class UploadInternalAuthentication

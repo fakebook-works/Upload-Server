@@ -40,6 +40,13 @@ A staged upload is finalized with `POST /media/assets/finalize`.
 
 The authenticated owner may cancel a still-pending upload with `DELETE /media/assets/{assetId}`. Internal lifecycle calls use `POST /internal/media/finalize` and `POST /internal/media/delete` with `X-Internal-UploadService-Secret`.
 
+Both internal lifecycle calls accept an optional `ownerUserId`. When it is supplied the server only
+finalizes or deletes assets whose recorded owner matches, and refuses assets whose ownership cannot
+be established; callers omit it only for cascade cleanup of URLs already held in their own state.
+Domain services validate client-supplied URLs up front with `POST /internal/media/authorize`
+(`{ ownerUserId, urls }` → `{ authorized, unauthorizedUrls }`) so a user cannot attach — and later
+destroy — media belonging to somebody else.
+
 JWT bearer validation is configured through the options pipeline rather than reading
 the signing key during top-level startup. This keeps production validation strict and
 allows integration tests or environment providers to supply configuration correctly.
