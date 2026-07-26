@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -29,6 +30,10 @@ builder.Services
 builder.Services
     .AddOptions<UploadInternalApiOptions>()
     .Bind(builder.Configuration.GetSection(UploadInternalApiOptions.SectionName));
+builder.Services.AddInternalRequestSigning(
+    builder.Configuration,
+    "InternalApi:SharedSecret",
+    "X-Internal-UploadService-Secret");
 
 builder.Services.AddSingleton<UploadAssetStore>();
 builder.Services.AddHostedService<UploadAssetCleanupService>();
@@ -160,6 +165,7 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
+app.UseMiddleware<InternalRequestSignatureMiddleware>();
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -599,6 +605,33 @@ internal static class UploadSecurity
         ["text/rtf"] = new("file", ".rtf", [".rtf"])
     };
 
+    private static readonly byte[][] SuspiciousPayloadTokens =
+    [
+        "<?php"u8.ToArray(),
+        "<script"u8.ToArray(),
+        "eval("u8.ToArray(),
+        "powershell"u8.ToArray(),
+        "cmd.exe"u8.ToArray(),
+        "/bin/sh"u8.ToArray(),
+        "system("u8.ToArray(),
+        "shell_exec"u8.ToArray(),
+        "wscript.shell"u8.ToArray(),
+        "mshta"u8.ToArray(),
+        "base64_decode"u8.ToArray(),
+        "fromcharcode"u8.ToArray()
+    ];
+
+    private static readonly byte[][] ActiveImageMarkupTokens =
+    [
+        "<html"u8.ToArray(),
+        "<svg"u8.ToArray()
+    ];
+
+    private static readonly int AuditOverlapBytes =
+        Math.Max(
+            SuspiciousPayloadTokens.Max(token => token.Length),
+            ActiveImageMarkupTokens.Max(token => token.Length)) - 1;
+
     public static MetadataValidation ValidateMetadata(string? fileName, string? contentType, long size)
     {
         if (string.IsNullOrWhiteSpace(fileName))
@@ -664,7 +697,7 @@ internal static class UploadSecurity
             return UploadValidationResult.Rejected("File content does not match the declared type.");
         }
 
-        var audit = AuditPayload(contentType, head);
+        var audit = await AuditPayloadAsync(contentType, input, cancellationToken);
         if (!audit.IsAllowed)
         {
             return UploadValidationResult.Rejected(audit.Error);
@@ -754,6 +787,130 @@ internal static class UploadSecurity
         }
 
         return MetadataValidation.Accepted();
+    }
+
+    public static async Task<MetadataValidation> AuditPayloadAsync(
+        string contentType,
+        Stream input,
+        CancellationToken cancellationToken)
+    {
+        var originalPosition = input.CanSeek ? input.Position : 0;
+        if (input.CanSeek)
+        {
+            input.Position = 0;
+        }
+
+        var readBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        var scanWindow = ArrayPool<byte>.Shared.Rent(readBuffer.Length + AuditOverlapBytes);
+        var overlap = new byte[AuditOverlapBytes];
+        var overlapLength = 0;
+        long totalRead = 0;
+        var maxBytes = contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+            ? MaxVideoUploadBytes
+            : MaxStandardUploadBytes;
+
+        try
+        {
+            while (true)
+            {
+                var read = await input.ReadAsync(readBuffer.AsMemory(0, readBuffer.Length), cancellationToken);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                var firstChunk = totalRead == 0;
+                totalRead += read;
+                if (totalRead > maxBytes)
+                {
+                    return MetadataValidation.Rejected($"File size must not exceed {maxBytes} bytes.");
+                }
+
+                var auditError = ScanAuditChunk(
+                    contentType,
+                    readBuffer,
+                    read,
+                    scanWindow,
+                    overlap,
+                    ref overlapLength,
+                    firstChunk);
+                if (auditError is not null)
+                {
+                    return MetadataValidation.Rejected(auditError);
+                }
+            }
+
+            return MetadataValidation.Accepted();
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(readBuffer, clearArray: true);
+            ArrayPool<byte>.Shared.Return(scanWindow, clearArray: true);
+            if (input.CanSeek)
+            {
+                input.Position = originalPosition;
+            }
+        }
+    }
+
+    private static string? ScanAuditChunk(
+        string contentType,
+        byte[] readBuffer,
+        int read,
+        byte[] scanWindow,
+        byte[] overlap,
+        ref int overlapLength,
+        bool firstChunk)
+    {
+        if (firstChunk && read >= 2 && readBuffer[0] == 0x4D && readBuffer[1] == 0x5A)
+        {
+            return "Executable payloads are not allowed.";
+        }
+
+        overlap.AsSpan(0, overlapLength).CopyTo(scanWindow);
+        readBuffer.AsSpan(0, read).CopyTo(scanWindow.AsSpan(overlapLength));
+        var windowLength = overlapLength + read;
+        var window = scanWindow.AsSpan(0, windowLength);
+        LowercaseAsciiInPlace(window.Slice(overlapLength));
+
+        if (ContainsAnyToken(window, SuspiciousPayloadTokens))
+        {
+            return "File failed active-content audit.";
+        }
+
+        if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) &&
+            ContainsAnyToken(window, ActiveImageMarkupTokens))
+        {
+            return "Image upload contains active markup.";
+        }
+
+        overlapLength = Math.Min(AuditOverlapBytes, windowLength);
+        window.Slice(windowLength - overlapLength, overlapLength).CopyTo(overlap);
+        return null;
+    }
+
+    private static bool ContainsAnyToken(ReadOnlySpan<byte> bytes, byte[][] tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (bytes.IndexOf(token) >= 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void LowercaseAsciiInPlace(Span<byte> bytes)
+    {
+        for (var index = 0; index < bytes.Length; index++)
+        {
+            if (bytes[index] is >= (byte)'A' and <= (byte)'Z')
+            {
+                bytes[index] = (byte)(bytes[index] + 32);
+            }
+        }
     }
 
     public static bool IsSafeLeafFileName(string fileName)

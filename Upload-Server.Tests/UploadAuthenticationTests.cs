@@ -21,6 +21,65 @@ public sealed class UploadAuthenticationTests
     private const string InternalSecret = "test-upload-internal-secret-at-least-thirty-two-bytes";
 
     [Fact]
+    public void Internal_signing_matches_the_documented_cross_language_vectors()
+    {
+        const string secret = "test-internal-secret-0123456789ab";
+        var bodySignature = Convert.ToHexString(InternalRequestSigning.Sign(
+            secret,
+            "POST",
+            "/internal/users?x=1",
+            1_753_500_000,
+            "0123456789abcdef0123456789abcdef",
+            Encoding.UTF8.GetBytes("{\"userId\":42}"))).ToLowerInvariant();
+        var emptySignature = Convert.ToHexString(InternalRequestSigning.Sign(
+            secret,
+            "GET",
+            "/internal/users/42/friend-ids",
+            1_753_500_000,
+            "ffffffffffffffffffffffffffffffff",
+            Array.Empty<byte>())).ToLowerInvariant();
+
+        Assert.Equal("e0f96895cf6c2f5b4f075e7f6f36902e591d2ce178321550041d45e6c8726512", bodySignature);
+        Assert.Equal("3ff404655307935abc5825da27bf6fd4b311b0f2034a23a0d7ebbc012aa430c1", emptySignature);
+    }
+
+    [Fact]
+    public async Task Internal_signing_handler_removes_the_raw_secret_and_covers_the_exact_body()
+    {
+        var capture = new RecordingInternalRequestHandler();
+        var signingHandler = new InternalRequestSigningHandler(Options.Create(
+            new InternalRequestSigningOptions
+            {
+                SendLegacySecret = false
+            }))
+        {
+            InnerHandler = capture
+        };
+        using var client = new HttpClient(signingHandler);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "http://upload.test/internal/media/finalize?source=outbox")
+        {
+            Content = new StringContent("{\"urls\":[\"/media/files/a.jpg\"]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-UploadService-Secret", InternalSecret);
+
+        using var response = await client.SendAsync(request);
+
+        Assert.False(capture.Headers.ContainsKey("X-Internal-UploadService-Secret"));
+        var timestamp = long.Parse(capture.Headers[InternalRequestSigning.TimestampHeader]);
+        var nonce = capture.Headers[InternalRequestSigning.NonceHeader];
+        var expected = Convert.ToHexString(InternalRequestSigning.Sign(
+            InternalSecret,
+            "POST",
+            "/internal/media/finalize?source=outbox",
+            timestamp,
+            nonce,
+            capture.Body)).ToLowerInvariant();
+        Assert.Equal(expected, capture.Headers[InternalRequestSigning.SignatureHeader]);
+    }
+
+    [Fact]
     public async Task Upload_uses_public_auth_me_userId_contract()
     {
         var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
@@ -55,6 +114,40 @@ public sealed class UploadAuthenticationTests
             {
                 Directory.Delete(storageRoot, recursive: true);
             }
+        }
+    }
+
+    [Fact]
+    public async Task Upload_rejects_active_content_after_the_old_8kb_audit_window()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+            var bytes = new byte[70 * 1024];
+            new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.CopyTo(bytes, 0);
+            // Start immediately before the 64 KiB scanner boundary to prove both
+            // full-file scanning and overlap detection between chunks.
+            Encoding.ASCII.GetBytes("<?PhP echo 1;").CopyTo(bytes, (64 * 1024) - 3);
+
+            using var form = new MultipartFormDataContent();
+            var png = new ByteArrayContent(bytes);
+            png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+            form.Add(png, "file", "late-payload.png");
+
+            using var response = await client.PostAsync("/media/upload", form);
+            var body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Contains("active-content audit", body, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
         }
     }
 
@@ -212,6 +305,66 @@ public sealed class UploadAuthenticationTests
     }
 
     [Fact]
+    public async Task Internal_signature_is_required_and_a_nonce_cannot_be_replayed()
+    {
+        await using var factory = new UploadServerFactory(
+            Path.GetTempPath(),
+            requireInternalSignature: true);
+        using var client = factory.CreateClient();
+        const string path = "/internal/media/finalize";
+        var body = Encoding.UTF8.GetBytes("{\"urls\":[]}");
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        const string nonce = "0123456789abcdef0123456789abcdef";
+        var signature = Convert.ToHexString(InternalRequestSigning.Sign(
+            InternalSecret,
+            "POST",
+            path,
+            timestamp,
+            nonce,
+            body)).ToLowerInvariant();
+
+        static HttpRequestMessage CreateSignedRequest(
+            string path,
+            byte[] body,
+            long timestamp,
+            string nonce,
+            string signature)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, path)
+            {
+                Content = new ByteArrayContent(body)
+            };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            request.Headers.TryAddWithoutValidation(InternalRequestSigning.TimestampHeader, timestamp.ToString());
+            request.Headers.TryAddWithoutValidation(InternalRequestSigning.NonceHeader, nonce);
+            request.Headers.TryAddWithoutValidation(InternalRequestSigning.SignatureHeader, signature);
+            return request;
+        }
+
+        using var unsigned = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = new ByteArrayContent(body)
+        };
+        unsigned.Headers.TryAddWithoutValidation("X-Internal-UploadService-Secret", InternalSecret);
+        using var unsignedResponse = await client.SendAsync(unsigned);
+        Assert.Equal(HttpStatusCode.Forbidden, unsignedResponse.StatusCode);
+
+        using var firstRequest = CreateSignedRequest(path, body, timestamp, nonce, signature);
+        using var firstResponse = await client.SendAsync(firstRequest);
+        Assert.True(
+            firstResponse.StatusCode == HttpStatusCode.OK,
+            $"Expected signed request to succeed, got {(int)firstResponse.StatusCode}: {await firstResponse.Content.ReadAsStringAsync()}");
+
+        using var replayRequest = CreateSignedRequest(path, body, timestamp, nonce, signature);
+        using var replayResponse = await client.SendAsync(replayRequest);
+        Assert.Equal(HttpStatusCode.Forbidden, replayResponse.StatusCode);
+        Assert.Contains(
+            "INVALID_INTERNAL_SIGNATURE",
+            await replayResponse.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task FinalizeOwned_does_not_commit_metadata_when_asset_file_is_missing()
     {
         var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
@@ -324,7 +477,10 @@ public sealed class UploadAuthenticationTests
         return content;
     }
 
-    private sealed class UploadServerFactory(string storageRoot, long authUserId = 42) : WebApplicationFactory<Program>
+    private sealed class UploadServerFactory(
+        string storageRoot,
+        long authUserId = 42,
+        bool requireInternalSignature = false) : WebApplicationFactory<Program>
     {
         public AuthContractHandler AuthHandler { get; } = new(authUserId);
 
@@ -341,7 +497,9 @@ public sealed class UploadAuthenticationTests
                     ["UploadStorage:RootPath"] = storageRoot,
                     ["UploadStorage:StagedUploadsEnabled"] = "true",
                     ["UploadStorage:PendingLifetimeMinutes"] = "60",
-                    ["InternalApi:SharedSecret"] = InternalSecret
+                    ["InternalApi:SharedSecret"] = InternalSecret,
+                    ["InternalAuth:RequireSignature"] = requireInternalSignature.ToString(),
+                    ["InternalAuth:SendLegacySecret"] = "false"
                 });
             });
 
@@ -357,6 +515,26 @@ public sealed class UploadAuthenticationTests
                 services.AddHttpClient("auth-service")
                     .ConfigurePrimaryHttpMessageHandler(() => AuthHandler);
             });
+        }
+    }
+
+    private sealed class RecordingInternalRequestHandler : HttpMessageHandler
+    {
+        public Dictionary<string, string> Headers { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public byte[] Body { get; private set; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            foreach (var header in request.Headers)
+            {
+                Headers[header.Key] = string.Join(",", header.Value);
+            }
+            Body = request.Content is null
+                ? []
+                : await request.Content.ReadAsByteArrayAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
 

@@ -1,4 +1,4 @@
-g# Fakebook Upload Server
+# Fakebook Upload Server
 
 Standalone upload service for Fakebook media. This repo is intentionally separate from the API Gateway and backend services.
 
@@ -21,7 +21,11 @@ Default URL: `http://localhost:4001`
 
 1. Authenticated frontend sends `multipart/form-data` directly to `POST /media/upload`; field name is `file`.
 2. Upload Server validates the JWT locally, then validates the live session through Authentication `me { userId }`.
-3. Server validates and stores the file under a generated filename. When staged uploads are enabled, the asset starts as `pending` with an expiry time.
+3. Server checks the allowlisted extension/content type and magic bytes, then audits the
+   complete bounded stream for active-content tokens (including tokens split across read
+   chunks) before storing it under a generated filename. When staged uploads are enabled,
+   the asset starts as `pending` with an expiry time. Served files include
+   `X-Content-Type-Options: nosniff`.
 4. Server returns a public `/media/files/{generatedName}` URL plus `assetId`, `state`, and `expiresAt`.
 5. Frontend sends that URL in a supported Gateway content/profile/message mutation.
    SocialGraph or Messenger persists the parent and reliably finalizes the asset through
