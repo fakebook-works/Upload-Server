@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -13,6 +14,7 @@ using IOPath = System.IO.Path;
 const string UploadRateLimitPolicy = "upload";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddFakebookServiceDefaults(builder.Configuration, "fakebook-upload");
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -86,8 +88,12 @@ builder.Services
     .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
     .Validate(options => !string.IsNullOrWhiteSpace(options.Issuer), "Jwt:Issuer is required.")
     .Validate(options => !string.IsNullOrWhiteSpace(options.Audience), "Jwt:Audience is required.")
-    .Validate(options => !string.IsNullOrWhiteSpace(options.SigningKey), "Jwt:SigningKey is required.")
-    .Validate(options => Encoding.UTF8.GetByteCount(options.SigningKey) >= 32, "Jwt:SigningKey must be at least 32 bytes.")
+    .Validate(options => options.HasValidPublicKey(),
+        "Jwt:PublicKeyBase64 must be a valid SubjectPublicKeyInfo RSA key of at least 2048 bits.")
+    .Validate(options => !string.IsNullOrWhiteSpace(options.KeyId) && options.KeyId.Length <= 64,
+        "Jwt:KeyId is required and must be at most 64 characters.")
+    .Validate(options => string.IsNullOrEmpty(options.LegacySigningKey) || Encoding.UTF8.GetByteCount(options.LegacySigningKey) >= 32,
+        "Jwt:LegacySigningKey must be empty or at least 32 bytes.")
     .ValidateOnStart();
 
 builder.Services.AddCors(options =>
@@ -113,11 +119,18 @@ builder.Services
     .Configure<IOptions<JwtOptions>>((options, configuredJwtOptions) =>
     {
         var jwtOptions = configuredJwtOptions.Value;
+        var signingKeys = new List<SecurityKey> { jwtOptions.CreatePublicSecurityKey() };
+        if (!string.IsNullOrEmpty(jwtOptions.LegacySigningKey))
+        {
+            signingKeys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.LegacySigningKey)));
+        }
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
+            IssuerSigningKeys = signingKeys,
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256, SecurityAlgorithms.HmacSha256],
+            RequireSignedTokens = true,
             ValidateIssuer = true,
             ValidIssuer = jwtOptions.Issuer,
             ValidateAudience = true,
@@ -240,6 +253,10 @@ app.Use(async (context, next) =>
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health/ready", async (IInternalNonceStore nonceStore, CancellationToken cancellationToken) =>
+    await nonceStore.IsAvailableAsync(cancellationToken)
+        ? Results.Ok(new { status = "ready" })
+        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 
 // Direct file upload – Bearer token validated locally (JWT) + verified with Auth service
 app.MapPost("/media/upload", async (
@@ -472,7 +489,47 @@ public sealed class JwtOptions
     public const string SectionName = "Jwt";
     public string Issuer { get; init; } = "fakebook-auth";
     public string Audience { get; init; } = "fakebook";
-    public string SigningKey { get; init; } = string.Empty;
+    public string PublicKeyBase64 { get; init; } = string.Empty;
+    public string KeyId { get; init; } = "fakebook-rs256-2026-01";
+    public string LegacySigningKey { get; init; } = string.Empty;
+
+    public RsaSecurityKey CreatePublicSecurityKey()
+    {
+        var rsa = RSA.Create();
+        try
+        {
+            rsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(PublicKeyBase64), out var bytesRead);
+            if (bytesRead == 0 || rsa.KeySize < 2048)
+            {
+                throw new CryptographicException("RSA public key is too small.");
+            }
+
+            return new RsaSecurityKey(rsa) { KeyId = KeyId };
+        }
+        catch
+        {
+            rsa.Dispose();
+            throw;
+        }
+    }
+
+    public bool HasValidPublicKey()
+    {
+        try
+        {
+            var key = CreatePublicSecurityKey();
+            key.Rsa?.Dispose();
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
 }
 
 public sealed class UploadStorageOptions

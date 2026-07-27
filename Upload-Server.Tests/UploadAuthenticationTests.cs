@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -11,13 +12,13 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
 public sealed class UploadAuthenticationTests
 {
-    private const string SigningKey = "test-signing-key-at-least-thirty-two-bytes-long";
     private const string InternalSecret = "test-upload-internal-secret-at-least-thirty-two-bytes";
 
     [Fact]
@@ -396,9 +397,15 @@ public sealed class UploadAuthenticationTests
 
     private static string CreateToken(bool includeSessionId = true)
     {
+        using var rsa = TestJwtKeys.CreatePrivateKey();
+        var signingKey = new RsaSecurityKey(rsa)
+        {
+            KeyId = TestJwtKeys.KeyId,
+            CryptoProviderFactory = new CryptoProviderFactory { CacheSignatureProviders = false }
+        };
         var credentials = new SigningCredentials(
-            new SymmetricSecurityKey(Encoding.UTF8.GetBytes(SigningKey)),
-            SecurityAlgorithms.HmacSha256);
+            signingKey,
+            SecurityAlgorithms.RsaSha256);
         var token = new JwtSecurityToken(
             issuer: "fakebook-auth",
             audience: "fakebook",
@@ -492,23 +499,29 @@ public sealed class UploadAuthenticationTests
                 {
                     ["Jwt:Issuer"] = "fakebook-auth",
                     ["Jwt:Audience"] = "fakebook",
-                    ["Jwt:SigningKey"] = SigningKey,
+                    ["Jwt:PublicKeyBase64"] = TestJwtKeys.PublicKeyBase64,
+                    ["Jwt:KeyId"] = TestJwtKeys.KeyId,
                     ["AuthService:Url"] = "http://auth.test/graphql",
                     ["UploadStorage:RootPath"] = storageRoot,
                     ["UploadStorage:StagedUploadsEnabled"] = "true",
                     ["UploadStorage:PendingLifetimeMinutes"] = "60",
                     ["InternalApi:SharedSecret"] = InternalSecret,
                     ["InternalAuth:RequireSignature"] = requireInternalSignature.ToString(),
-                    ["InternalAuth:SendLegacySecret"] = "false"
+                    ["InternalAuth:SendLegacySecret"] = "false",
+                    ["ConnectionStrings:SecurityRedis"] = "test.invalid:6379"
                 });
             });
 
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<IInternalNonceStore>();
+                services.AddSingleton<IInternalNonceStore, TestNonceStore>();
                 services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
-                    options.TokenValidationParameters.IssuerSigningKey =
-                        new SymmetricSecurityKey(Encoding.UTF8.GetBytes(SigningKey));
+                    options.TokenValidationParameters.IssuerSigningKeys =
+                    [
+                        new RsaSecurityKey(CreateTestPublicKey()) { KeyId = TestJwtKeys.KeyId }
+                    ];
                     options.TokenValidationParameters.ValidIssuer = "fakebook-auth";
                     options.TokenValidationParameters.ValidAudience = "fakebook";
                 });
@@ -516,6 +529,35 @@ public sealed class UploadAuthenticationTests
                     .ConfigurePrimaryHttpMessageHandler(() => AuthHandler);
             });
         }
+
+        private static RSA CreateTestPublicKey()
+        {
+            var rsa = RSA.Create();
+            rsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(TestJwtKeys.PublicKeyBase64), out _);
+            return rsa;
+        }
+    }
+
+    private sealed class TestNonceStore : IInternalNonceStore
+    {
+        private readonly HashSet<string> _claimed = new(StringComparer.Ordinal);
+        private readonly object _sync = new();
+
+        public Task<InternalNonceClaimResult> TryClaimAsync(
+            string audience,
+            string nonce,
+            TimeSpan retention,
+            CancellationToken cancellationToken)
+        {
+            lock (_sync)
+            {
+                return Task.FromResult(_claimed.Add($"{audience}:{nonce}")
+                    ? InternalNonceClaimResult.Claimed
+                    : InternalNonceClaimResult.Duplicate);
+            }
+        }
+
+        public Task<bool> IsAvailableAsync(CancellationToken cancellationToken) => Task.FromResult(true);
     }
 
     private sealed class RecordingInternalRequestHandler : HttpMessageHandler
@@ -536,6 +578,7 @@ public sealed class UploadAuthenticationTests
                 : await request.Content.ReadAsByteArrayAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
+
     }
 
     private sealed class AuthContractHandler(long authUserId) : HttpMessageHandler

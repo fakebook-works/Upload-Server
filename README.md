@@ -6,7 +6,7 @@ Standalone upload service for Fakebook media. This repo is intentionally separat
 
 Create `appsettings.Development.json` from `appsettings.example.json` and configure:
 
-- `Jwt:SigningKey`: same signing key used by Authentication and API Gateway.
+- `Jwt:PublicKeyBase64` and `Jwt:KeyId`: Auth's RS256 public key and matching `kid`.
 - `AuthService:Url`: Authentication GraphQL endpoint.
 - `Cors:AllowedOrigins`: frontend origins allowed to upload directly.
 - `UploadStorage:RootPath`: persistent media directory.
@@ -38,7 +38,10 @@ Batch upload is available at `POST /media/upload-multiple` with up to 10 files.
 
 A staged upload is finalized with `POST /media/assets/finalize`.
 
-The authenticated owner may cancel a still-pending upload with `DELETE /media/assets/{assetId}`. Internal lifecycle calls use `POST /internal/media/finalize` and `POST /internal/media/delete` with `X-Internal-UploadService-Secret`.
+The authenticated owner may cancel a still-pending upload with `DELETE /media/assets/{assetId}`.
+Internal lifecycle calls use signed `POST /internal/media/finalize` and
+`POST /internal/media/delete` requests with timestamp, nonce and HMAC headers; the raw
+legacy secret header is disabled in managed environments.
 
 Both internal lifecycle calls accept an optional `ownerUserId`. When it is supplied the server only
 finalizes or deletes assets whose recorded owner matches, and refuses assets whose ownership cannot

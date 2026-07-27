@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,7 +5,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 public sealed class InternalRequestSigningOptions
 {
@@ -17,12 +19,15 @@ public sealed class InternalRequestSigningOptions
     public int ClockSkewSeconds { get; set; } = 300;
     public int NonceRetentionSeconds { get; set; } = 900;
     public int MaxBodyBytes { get; set; } = 2 * 1024 * 1024;
+    public string RedisKeyPrefix { get; set; } = "fakebook:internal-nonce:v1";
+    public int RedisOperationTimeoutMilliseconds { get; set; } = 1_000;
 }
 
 public sealed record InternalRequestSigningTarget(
     IConfiguration Configuration,
     string SecretConfigurationKey,
-    string LegacyHeaderName)
+    string LegacyHeaderName,
+    string Audience)
 {
     public string Secret => Configuration[SecretConfigurationKey] ?? string.Empty;
 }
@@ -31,7 +36,126 @@ public enum InternalSignatureValidationResult
 {
     NoSignature,
     Valid,
-    Invalid
+    Invalid,
+    Unavailable
+}
+
+public enum InternalNonceClaimResult
+{
+    Claimed,
+    Duplicate,
+    Unavailable
+}
+
+public interface IInternalNonceStore
+{
+    Task<InternalNonceClaimResult> TryClaimAsync(
+        string audience,
+        string nonce,
+        TimeSpan retention,
+        CancellationToken cancellationToken);
+
+    Task<bool> IsAvailableAsync(CancellationToken cancellationToken);
+}
+
+public sealed class InternalNonceRedisConnection : IDisposable
+{
+    private readonly Lazy<IConnectionMultiplexer> _connection;
+
+    public InternalNonceRedisConnection(string connectionString, int operationTimeoutMilliseconds)
+    {
+        ConnectionString = connectionString;
+        _connection = new Lazy<IConnectionMultiplexer>(() =>
+        {
+            var configuration = ConfigurationOptions.Parse(connectionString);
+            configuration.AbortOnConnectFail = false;
+            configuration.ConnectRetry = 0;
+            configuration.ConnectTimeout = Math.Clamp(operationTimeoutMilliseconds, 100, 5_000);
+            configuration.AsyncTimeout = Math.Clamp(operationTimeoutMilliseconds, 100, 5_000);
+            configuration.SyncTimeout = Math.Clamp(operationTimeoutMilliseconds, 100, 5_000);
+            return ConnectionMultiplexer.Connect(configuration);
+        }, LazyThreadSafetyMode.ExecutionAndPublication);
+    }
+
+    public string ConnectionString { get; }
+    public IConnectionMultiplexer Connection => _connection.Value;
+
+    public void Dispose()
+    {
+        if (_connection.IsValueCreated)
+        {
+            _connection.Value.Dispose();
+        }
+    }
+}
+
+public sealed class RedisInternalNonceStore(
+    InternalNonceRedisConnection redis,
+    IOptions<InternalRequestSigningOptions> options,
+    ILogger<RedisInternalNonceStore> logger) : IInternalNonceStore
+{
+    public async Task<InternalNonceClaimResult> TryClaimAsync(
+        string audience,
+        string nonce,
+        TimeSpan retention,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = $"{options.Value.RedisKeyPrefix}:{NormalizeAudience(audience)}:{nonce.ToLowerInvariant()}";
+            var claimed = await redis.Connection.GetDatabase().StringSetAsync(
+                key,
+                "1",
+                retention,
+                When.NotExists,
+                CommandFlags.DemandMaster);
+            return claimed ? InternalNonceClaimResult.Claimed : InternalNonceClaimResult.Duplicate;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsRedisAvailabilityFailure(exception))
+        {
+            logger.LogWarning(exception, "Internal request replay protection is unavailable.");
+            return InternalNonceClaimResult.Unavailable;
+        }
+    }
+
+    public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await redis.Connection.GetDatabase().PingAsync() <= TimeSpan.FromSeconds(5);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsRedisAvailabilityFailure(exception))
+        {
+            logger.LogWarning(exception, "Internal request replay-protection health check failed.");
+            return false;
+        }
+    }
+
+    private static string NormalizeAudience(string value) => string.Concat(
+        value.ToLowerInvariant().Select(character => char.IsAsciiLetterOrDigit(character) ? character : '-'));
+
+    private static bool IsRedisAvailabilityFailure(Exception exception) =>
+        exception is RedisException or TimeoutException or InvalidOperationException or ArgumentException;
+}
+
+public sealed class InternalNonceStoreHealthCheck(IInternalNonceStore nonceStore) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default) =>
+        await nonceStore.IsAvailableAsync(cancellationToken)
+            ? HealthCheckResult.Healthy("Distributed replay protection is available.")
+            : HealthCheckResult.Unhealthy("Distributed replay protection is unavailable.");
 }
 
 public static class InternalRequestSigning
@@ -147,11 +271,10 @@ public sealed class InternalRequestSigningHandler(IOptions<InternalRequestSignin
 
 public sealed class InternalSignatureValidator(
     IOptions<InternalRequestSigningOptions> options,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IInternalNonceStore nonceStore,
+    InternalRequestSigningTarget target)
 {
-    private readonly ConcurrentDictionary<string, long> _seenNonces = new(StringComparer.Ordinal);
-    private long _validationCount;
-
     public async Task<InternalSignatureValidationResult> ValidateAsync(
         HttpRequest request,
         string secret,
@@ -215,7 +338,17 @@ public sealed class InternalSignatureValidator(
             return InternalSignatureValidationResult.Invalid;
         }
 
-        if (!TryReserveNonce(nonce, now))
+        var nonceResult = await nonceStore.TryClaimAsync(
+            target.Audience,
+            nonce,
+            TimeSpan.FromSeconds(options.Value.NonceRetentionSeconds),
+            cancellationToken);
+        if (nonceResult == InternalNonceClaimResult.Unavailable)
+        {
+            return InternalSignatureValidationResult.Unavailable;
+        }
+
+        if (nonceResult != InternalNonceClaimResult.Claimed)
         {
             return InternalSignatureValidationResult.Invalid;
         }
@@ -235,46 +368,6 @@ public sealed class InternalSignatureValidator(
         {
             return false;
         }
-    }
-
-    private bool TryReserveNonce(string nonce, long now)
-    {
-        var expiresAt = checked(now + options.Value.NonceRetentionSeconds);
-        while (true)
-        {
-            if (!_seenNonces.TryGetValue(nonce, out var existingExpiry))
-            {
-                if (_seenNonces.TryAdd(nonce, expiresAt))
-                {
-                    break;
-                }
-
-                continue;
-            }
-
-            if (existingExpiry >= now)
-            {
-                return false;
-            }
-
-            if (_seenNonces.TryUpdate(nonce, expiresAt, existingExpiry))
-            {
-                break;
-            }
-        }
-
-        if (Interlocked.Increment(ref _validationCount) % 256 == 0)
-        {
-            foreach (var pair in _seenNonces)
-            {
-                if (pair.Value < now)
-                {
-                    _seenNonces.TryRemove(pair.Key, out _);
-                }
-            }
-        }
-
-        return true;
     }
 
     private static async Task<byte[]?> ReadBodyAsync(
@@ -352,15 +445,20 @@ public sealed class InternalRequestSignatureMiddleware(RequestDelegate next)
             return;
         }
 
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        context.Response.StatusCode = result == InternalSignatureValidationResult.Unavailable
+            ? StatusCodes.Status503ServiceUnavailable
+            : StatusCodes.Status403Forbidden;
         await context.Response.WriteAsJsonAsync(
             new
             {
                 error = new
                 {
-                    code = result == InternalSignatureValidationResult.NoSignature
-                        ? "INTERNAL_SIGNATURE_REQUIRED"
-                        : "INVALID_INTERNAL_SIGNATURE",
+                    code = result switch
+                    {
+                        InternalSignatureValidationResult.NoSignature => "INTERNAL_SIGNATURE_REQUIRED",
+                        InternalSignatureValidationResult.Unavailable => "INTERNAL_REPLAY_PROTECTION_UNAVAILABLE",
+                        _ => "INVALID_INTERNAL_SIGNATURE"
+                    },
                     message = "Internal request signature validation failed."
                 }
             },
@@ -383,11 +481,18 @@ public static class InternalRequestSigningServiceCollectionExtensions
                 value => value.ClockSkewSeconds is >= 30 and <= 900 &&
                          value.NonceRetentionSeconds >= value.ClockSkewSeconds &&
                          value.NonceRetentionSeconds <= 3600 &&
-                         value.MaxBodyBytes is >= 1024 and <= 16 * 1024 * 1024,
+                         value.MaxBodyBytes is >= 1024 and <= 16 * 1024 * 1024 &&
+                         value.RedisOperationTimeoutMilliseconds is >= 100 and <= 5_000 &&
+                         !string.IsNullOrWhiteSpace(value.RedisKeyPrefix) &&
+                         value.RedisKeyPrefix.Length <= 100,
                 "InternalAuth signing limits are invalid.")
+            .Validate(
+                value => incomingSecretConfigurationKey is null ||
+                         !value.RequireSignature ||
+                         !string.IsNullOrWhiteSpace(configuration.GetConnectionString("SecurityRedis")),
+                "ConnectionStrings:SecurityRedis is required when internal signatures are required.")
             .ValidateOnStart();
         services.AddSingleton(TimeProvider.System);
-        services.AddSingleton<InternalSignatureValidator>();
         services.AddTransient<InternalRequestSigningHandler>();
 
         if (incomingSecretConfigurationKey is not null && incomingLegacyHeaderName is not null)
@@ -395,7 +500,17 @@ public static class InternalRequestSigningServiceCollectionExtensions
             services.AddSingleton(new InternalRequestSigningTarget(
                 configuration,
                 incomingSecretConfigurationKey,
-                incomingLegacyHeaderName));
+                incomingLegacyHeaderName,
+                incomingSecretConfigurationKey));
+            services.AddSingleton(serviceProvider => new InternalNonceRedisConnection(
+                configuration.GetConnectionString("SecurityRedis") ?? string.Empty,
+                serviceProvider.GetRequiredService<IOptions<InternalRequestSigningOptions>>()
+                    .Value.RedisOperationTimeoutMilliseconds));
+            services.AddSingleton<IInternalNonceStore, RedisInternalNonceStore>();
+            services.AddSingleton<InternalSignatureValidator>();
+            services.AddHealthChecks().AddCheck<InternalNonceStoreHealthCheck>(
+                "internal_nonce_redis",
+                tags: ["ready"]);
         }
 
         return services;
