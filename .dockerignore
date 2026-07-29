@@ -1,10 +1,18 @@
 .git/
+.github/
+.idea/
+.vscode/
 .vs/
 **/bin/
 **/obj/
 **/TestResults/
 **/coverage/
+Upload-Server.Tests/
 *.log
+*.suo
+*.user
 .env
 .env.*
+appsettings.Local.json
+**/secrets.json
 
