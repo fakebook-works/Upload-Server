@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.302 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
@@ -13,14 +13,12 @@ RUN dotnet publish "Fakebook.UploadServer.csproj" \
     --no-restore \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS final
 
 WORKDIR /app
 
 # Docker Compose probes /health/ready from inside the container.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache curl
 
 ENV ASPNETCORE_HTTP_PORTS=4001
 EXPOSE 4001

@@ -58,7 +58,7 @@ allows integration tests or environment providers to supply configuration correc
 
 - Rejects path traversal and non-leaf filenames.
 - Rejects disallowed extensions and MIME types.
-- Enforces max upload size (image max 25MB, video max 100MB, max request body 102MB).
+- Enforces max upload size (image max 25MB, video max 500MB, max request body 502MB).
 - Requires a valid JWT and active Authentication session.
 - Validates magic headers for JPEG, PNG, GIF, WebP, MP4, audio, and PDF.
 - Rejects executable `MZ` payloads.

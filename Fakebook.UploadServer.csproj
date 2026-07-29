@@ -23,4 +23,8 @@
     <None Remove="Upload-Server.Tests\**\*" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Upload-Server.Tests" />
+  </ItemGroup>
+
 </Project>

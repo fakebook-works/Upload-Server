@@ -666,7 +666,7 @@ internal static class UploadIdentity
 internal static class UploadSecurity
 {
     public const long MaxStandardUploadBytes = 25 * 1024 * 1024;
-    public const long MaxVideoUploadBytes = 100 * 1024 * 1024;
+    public const long MaxVideoUploadBytes = 500 * 1024 * 1024;
     public const long MaxRequestBodyBytes = MaxVideoUploadBytes + (2 * 1024 * 1024);
 
     private static readonly IReadOnlyDictionary<string, MediaKind> AllowedTypes = new Dictionary<string, MediaKind>(StringComparer.OrdinalIgnoreCase)
