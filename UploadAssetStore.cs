@@ -13,6 +13,13 @@ public sealed record UploadAssetMetadata(
     DateTimeOffset CreatedAt,
     DateTimeOffset? ExpiresAt);
 
+public sealed record UploadFinalizeResult(
+    int RequestedCount,
+    int NormalizedCount,
+    int FinalizedCount,
+    int MissingFileCount,
+    int OwnershipMismatchCount);
+
 public sealed class UploadAssetStore
 {
     public const string PendingState = "pending";
@@ -56,14 +63,39 @@ public sealed class UploadAssetStore
         long? ownerUserId,
         CancellationToken cancellationToken)
     {
+        var result = await FinalizeDetailedAsync(urls, ownerUserId, cancellationToken);
+        return result.FinalizedCount;
+    }
+
+    /// <summary>
+    /// Finalizes a complete lifecycle batch and reports partial completion explicitly.
+    /// The legacy integer API remains available for callers that only need the count;
+    /// internal HTTP callers use this report to fail closed when storage is inconsistent.
+    /// </summary>
+    public async Task<UploadFinalizeResult> FinalizeDetailedAsync(
+        IEnumerable<string> urls,
+        long? ownerUserId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = urls
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var storedNames = NormalizeStoredNames(candidates).ToArray();
         var finalized = 0;
+        var missingFiles = 0;
+        var ownershipMismatches = 0;
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            foreach (var storedName in NormalizeStoredNames(urls))
+            foreach (var storedName in storedNames)
             {
                 var path = ResolveAssetPath(storedName);
-                if (!File.Exists(path)) continue;
+                if (!File.Exists(path))
+                {
+                    missingFiles++;
+                    continue;
+                }
                 var metadata = await TryReadUnsafeAsync(storedName, cancellationToken);
                 if (metadata is null)
                 {
@@ -73,7 +105,11 @@ public sealed class UploadAssetStore
                 }
                 // A declared owner is authoritative: never extend the life of another
                 // user's asset just because a URL string was supplied.
-                if (ownerUserId.HasValue && metadata.OwnerUserId != ownerUserId.Value) continue;
+                if (ownerUserId.HasValue && metadata.OwnerUserId != ownerUserId.Value)
+                {
+                    ownershipMismatches++;
+                    continue;
+                }
                 if (metadata.State != CommittedState || metadata.ExpiresAt is not null)
                 {
                     await WriteUnsafeAsync(metadata with { State = CommittedState, ExpiresAt = null }, cancellationToken);
@@ -85,7 +121,12 @@ public sealed class UploadAssetStore
         {
             _gate.Release();
         }
-        return finalized;
+        return new UploadFinalizeResult(
+            candidates.Length,
+            storedNames.Length,
+            finalized,
+            missingFiles,
+            ownershipMismatches);
     }
 
     public async Task<int> DeleteByUrlsAsync(

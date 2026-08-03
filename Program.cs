@@ -395,7 +395,23 @@ app.MapPost("/media/assets/finalize", async (
         {
             return Results.Unauthorized();
         }
-        var count = await assetStore.FinalizeOwnedAsync(body.AssetIds ?? Array.Empty<string>(), ownerUserId, cancellationToken);
+        var assetIds = (body.AssetIds ?? Array.Empty<string>())
+            .Where(assetId => !string.IsNullOrWhiteSpace(assetId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (assetIds.Any(assetId => !Guid.TryParseExact(assetId, "N", out _)))
+        {
+            return Results.BadRequest(new { error = "The finalize request contains an invalid asset identifier." });
+        }
+
+        var count = await assetStore.FinalizeOwnedAsync(assetIds, ownerUserId, cancellationToken);
+        if (count != assetIds.Length)
+        {
+            // Do not acknowledge a partial browser upload batch. The caller can retry
+            // while the staged files are still available instead of leaving pending
+            // assets to be deleted silently by the cleanup worker.
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
         return Results.Ok(new { finalized = count });
     })
     .RequireAuthorization();
@@ -411,11 +427,30 @@ app.MapPost("/internal/media/finalize", async (
         {
             return Results.Unauthorized();
         }
-        var count = await assetStore.FinalizeAsync(
-            body.Urls ?? Array.Empty<string>(),
+        var urls = body.Urls ?? Array.Empty<string>();
+        var result = await assetStore.FinalizeDetailedAsync(
+            urls,
             body.OwnerUserId,
             cancellationToken);
-        return Results.Ok(new { finalized = count });
+
+        // A lifecycle event is a batch contract: acknowledging a partial batch would
+        // mark the outbox row complete while the remaining files stay pending and are
+        // later removed by expiry cleanup. Invalid/off-server URLs are a caller bug;
+        // missing files are a storage visibility failure and must be retried.
+        if (result.NormalizedCount != result.RequestedCount)
+        {
+            return Results.BadRequest(new { error = "The finalize request contains an invalid media URL." });
+        }
+        if (result.OwnershipMismatchCount > 0)
+        {
+            return Results.Conflict(new { error = "Media ownership validation failed." });
+        }
+        if (result.MissingFileCount > 0 || result.FinalizedCount != result.NormalizedCount)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        return Results.Ok(new { finalized = result.FinalizedCount });
     });
 
 // Ownership probe used by domain services before they persist a client-supplied media URL.

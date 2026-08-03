@@ -90,6 +90,39 @@ public sealed class MediaOwnershipTests
     }
 
     [Fact]
+    public async Task Finalize_detailed_reports_missing_storage_without_acknowledging_it()
+    {
+        await WithStoreAsync(async (store, root) =>
+        {
+            var (url, path) = await CreateAssetAsync(store, root, Owner);
+            File.Delete(path);
+
+            var result = await store.FinalizeDetailedAsync([url], Owner, CancellationToken.None);
+
+            Assert.Equal(1, result.RequestedCount);
+            Assert.Equal(1, result.NormalizedCount);
+            Assert.Equal(0, result.FinalizedCount);
+            Assert.Equal(1, result.MissingFileCount);
+            Assert.Equal(0, result.OwnershipMismatchCount);
+        });
+    }
+
+    [Fact]
+    public async Task Finalize_detailed_reports_owner_mismatch_without_committing()
+    {
+        await WithStoreAsync(async (store, root) =>
+        {
+            var (url, _) = await CreateAssetAsync(store, root, Owner);
+
+            var result = await store.FinalizeDetailedAsync([url], Attacker, CancellationToken.None);
+
+            Assert.Equal(0, result.FinalizedCount);
+            Assert.Equal(1, result.OwnershipMismatchCount);
+            Assert.Equal(0, result.MissingFileCount);
+        });
+    }
+
+    [Fact]
     public async Task FindUnauthorizedUrls_reports_foreign_unknown_and_off_server_urls()
     {
         await WithStoreAsync(async (store, root) =>
