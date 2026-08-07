@@ -18,7 +18,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS final
 WORKDIR /app
 
 # Docker Compose probes /health/ready from inside the container.
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl libstdc++ libgcc
 
 ENV ASPNETCORE_HTTP_PORTS=4001
 EXPOSE 4001

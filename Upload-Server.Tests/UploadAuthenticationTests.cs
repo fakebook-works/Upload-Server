@@ -92,11 +92,7 @@ public sealed class UploadAuthenticationTests
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
 
             using var content = new MultipartFormDataContent();
-            var png = new ByteArrayContent(
-            [
-                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-                0x00, 0x00, 0x00, 0x00
-            ]);
+            var png = new ByteArrayContent(MediaMetadataSanitizerTests.CreatePng());
             png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
             content.Add(png, "file", "avatar.png");
 
@@ -228,6 +224,8 @@ public sealed class UploadAuthenticationTests
             Assert.Equal(
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 download.Content.Headers.ContentType?.MediaType);
+            Assert.True(download.Headers.CacheControl?.Private);
+            Assert.True(download.Headers.CacheControl?.NoStore);
         }
         finally
         {
@@ -264,7 +262,7 @@ public sealed class UploadAuthenticationTests
     }
 
     [Fact]
-    public async Task Staged_asset_can_only_be_finalized_and_deleted_with_internal_secret()
+    public async Task Staged_asset_can_only_be_finalized_and_exact_detach_may_omit_owner_with_internal_secret()
     {
         var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
         try
@@ -284,18 +282,49 @@ public sealed class UploadAuthenticationTests
             Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
 
             client.DefaultRequestHeaders.Add("X-Internal-UploadService-Secret", InternalSecret);
-            using var finalized = await client.PostAsJsonAsync("/internal/media/finalize", new { urls = new[] { url } });
+            var lifecycleAt = DateTimeOffset.UtcNow;
+            var reference = new { url, referenceId = "social:media:integration-test" };
+            using var authorized = await client.PostAsJsonAsync(
+                "/internal/media/authorize",
+                new { ownerUserId = 42, references = new[] { reference }, operationAt = lifecycleAt });
+            Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+            using (var authorizationBody = JsonDocument.Parse(
+                       await authorized.Content.ReadAsStringAsync()))
+            {
+                Assert.True(authorizationBody.RootElement.GetProperty("authorized").GetBoolean());
+                Assert.True(authorizationBody.RootElement.GetProperty("exactReferences").GetBoolean());
+                Assert.Equal(
+                    UploadAssetStore.CurrentLifecycleVersion,
+                    authorizationBody.RootElement.GetProperty("lifecycleVersion").GetInt32());
+                Assert.Equal(1, authorizationBody.RootElement.GetProperty("referenceCount").GetInt32());
+            }
+            using var finalized = await client.PostAsJsonAsync(
+                "/internal/media/finalize",
+                new { ownerUserId = 42, references = new[] { reference }, operationAt = lifecycleAt });
             Assert.Equal(HttpStatusCode.OK, finalized.StatusCode);
 
             client.DefaultRequestHeaders.Remove("X-Internal-UploadService-Secret");
+            using (var served = await client.GetAsync(url))
+            {
+                Assert.Equal(HttpStatusCode.OK, served.StatusCode);
+                Assert.True(served.Headers.CacheControl?.Private);
+                Assert.True(served.Headers.CacheControl?.NoStore);
+            }
+
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
             using var ownerDelete = await client.DeleteAsync($"/media/assets/{assetId}");
             Assert.Equal(HttpStatusCode.NotFound, ownerDelete.StatusCode);
 
             client.DefaultRequestHeaders.Authorization = null;
             client.DefaultRequestHeaders.Add("X-Internal-UploadService-Secret", InternalSecret);
-            using var deleted = await client.PostAsJsonAsync("/internal/media/delete", new { urls = new[] { url } });
+            using var deleted = await client.PostAsJsonAsync(
+                "/internal/media/delete",
+                new { references = new[] { reference }, operationAt = lifecycleAt.AddSeconds(1) });
             Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+            var assetStore = factory.Services.GetRequiredService<UploadAssetStore>();
+            await assetStore.CleanupExpiredAsync(
+                DateTimeOffset.UtcNow.AddMinutes(121),
+                CancellationToken.None);
             using var missing = await client.GetAsync(url);
             Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         }
@@ -303,6 +332,52 @@ public sealed class UploadAuthenticationTests
         {
             if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task Reference_lifecycle_http_requires_operation_time_and_rejects_future_skew()
+    {
+        await using var factory = new UploadServerFactory(Path.GetTempPath());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Internal-UploadService-Secret", InternalSecret);
+        var reference = new
+        {
+            url = $"/media/files/{Guid.NewGuid():N}.png",
+            referenceId = "socialgraph:media:clock"
+        };
+
+        using var missing = await client.PostAsJsonAsync(
+            "/internal/media/finalize",
+            new { ownerUserId = 42, references = new[] { reference } });
+        using var future = await client.PostAsJsonAsync(
+            "/internal/media/finalize",
+            new
+            {
+                ownerUserId = 42,
+                references = new[] { reference },
+                operationAt = DateTimeOffset.UtcNow.AddMinutes(6)
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal((HttpStatusCode)425, future.StatusCode);
+    }
+
+    [Fact]
+    public async Task Browser_finalize_rejects_invalid_and_oversized_asset_batches()
+    {
+        await using var factory = new UploadServerFactory(Path.GetTempPath());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+        using var invalid = await client.PostAsJsonAsync(
+            "/media/assets/finalize",
+            new { assetIds = new[] { "not-an-asset-id" } });
+        using var oversized = await client.PostAsJsonAsync(
+            "/media/assets/finalize",
+            new { assetIds = Enumerable.Range(0, 513).Select(_ => Guid.NewGuid().ToString("N")).ToArray() });
+
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, oversized.StatusCode);
     }
 
     [Fact]
@@ -420,11 +495,7 @@ public sealed class UploadAuthenticationTests
     private static MultipartFormDataContent CreatePngForm()
     {
         var content = new MultipartFormDataContent();
-        var png = new ByteArrayContent(
-        [
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x00
-        ]);
+        var png = new ByteArrayContent(MediaMetadataSanitizerTests.CreatePng());
         png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         content.Add(png, "file", "avatar.png");
         return content;
@@ -433,12 +504,7 @@ public sealed class UploadAuthenticationTests
     private static MultipartFormDataContent CreateWebmAudioForm()
     {
         var content = new MultipartFormDataContent();
-        var webm = new ByteArrayContent(
-        [
-            0x1A, 0x45, 0xDF, 0xA3,
-            0x9F, 0x42, 0x86, 0x81,
-            0x01, 0x42, 0xF7, 0x81
-        ]);
+        var webm = new ByteArrayContent(MediaMetadataSanitizerTests.CreateMinimalWebm());
         webm.Headers.ContentType = new MediaTypeHeaderValue("audio/webm");
         content.Add(webm, "file", "voice-message.webm");
         return content;
@@ -446,11 +512,7 @@ public sealed class UploadAuthenticationTests
 
     private static MultipartFormDataContent CreateMp4Form(int size)
     {
-        var bytes = new byte[size];
-        bytes[4] = (byte)'f';
-        bytes[5] = (byte)'t';
-        bytes[6] = (byte)'y';
-        bytes[7] = (byte)'p';
+        var bytes = MediaMetadataSanitizerTests.CreateMinimalMp4(size);
         var content = new MultipartFormDataContent();
         var video = new ByteArrayContent(bytes);
         video.Headers.ContentType = new MediaTypeHeaderValue("video/mp4");

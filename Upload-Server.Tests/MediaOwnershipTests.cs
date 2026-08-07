@@ -27,7 +27,7 @@ public sealed class MediaOwnershipTests
     }
 
     [Fact]
-    public async Task Delete_removes_an_asset_owned_by_the_declared_user()
+    public async Task Legacy_url_delete_schedules_but_does_not_immediately_destroy_owned_asset()
     {
         await WithStoreAsync(async (store, root) =>
         {
@@ -36,12 +36,12 @@ public sealed class MediaOwnershipTests
             var deleted = await store.DeleteByUrlsAsync([url], Owner, CancellationToken.None);
 
             Assert.Equal(1, deleted);
-            Assert.False(File.Exists(path));
+            Assert.True(File.Exists(path));
         });
     }
 
     [Fact]
-    public async Task Delete_without_a_declared_owner_still_performs_cascade_cleanup()
+    public async Task Legacy_url_delete_without_owner_is_also_deferred()
     {
         await WithStoreAsync(async (store, root) =>
         {
@@ -50,7 +50,7 @@ public sealed class MediaOwnershipTests
             var deleted = await store.DeleteByUrlsAsync([url], null, CancellationToken.None);
 
             Assert.Equal(1, deleted);
-            Assert.False(File.Exists(path));
+            Assert.True(File.Exists(path));
         });
     }
 
@@ -163,8 +163,8 @@ public sealed class MediaOwnershipTests
         var storedName = $"{Guid.NewGuid():N}.png";
         Directory.CreateDirectory(root);
         var path = Path.Combine(root, storedName);
-        await File.WriteAllTextAsync(path, "asset");
         await store.RegisterAsync(storedName, ownerUserId, "photo.png", "image/png", 5, CancellationToken.None);
+        await File.WriteAllTextAsync(path, "asset");
         return ($"/media/files/{storedName}", path);
     }
 

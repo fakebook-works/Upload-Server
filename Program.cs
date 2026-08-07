@@ -12,6 +12,8 @@ using Microsoft.IdentityModel.Tokens;
 using IOPath = System.IO.Path;
 
 const string UploadRateLimitPolicy = "upload";
+const int MaxBrowserFinalizeBodyBytes = 64 * 1024;
+const int MaxBrowserFinalizeAssets = 512;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddFakebookServiceDefaults(builder.Configuration, "fakebook-upload");
@@ -27,7 +29,35 @@ builder.Services.Configure<FormOptions>(options =>
 
 builder.Services
     .AddOptions<UploadStorageOptions>()
-    .Bind(builder.Configuration.GetSection(UploadStorageOptions.SectionName));
+    .Bind(builder.Configuration.GetSection(UploadStorageOptions.SectionName))
+    .Validate(options => options.LifecycleLockTimeoutSeconds is >= 1 and <= 120,
+        "UploadStorage:LifecycleLockTimeoutSeconds must be between 1 and 120.")
+    .Validate(options => options.AuthorizationReservationMinutes is >= 5 and <= 10_080,
+        "UploadStorage:AuthorizationReservationMinutes must be between 5 and 10080.")
+    .Validate(options => options.BrowserReservationMinutes is >= 5 and <= 1_440,
+        "UploadStorage:BrowserReservationMinutes must be between 5 and 1440.")
+    .Validate(options => options.ReferenceDeleteGraceMinutes is >= 0 and <= 10_080,
+        "UploadStorage:ReferenceDeleteGraceMinutes must be between 0 and 10080.")
+    .Validate(options => options.DeletedTombstoneRetentionMinutes is >= 60 and <= 525_600,
+        "UploadStorage:DeletedTombstoneRetentionMinutes must be between 60 and 525600.")
+    .Validate(options => options.QuarantineRetentionMinutes is >= 30 and <= 10_080,
+        "UploadStorage:QuarantineRetentionMinutes must be between 30 and 10080.")
+    .Validate(options => options.ImageLossyQuality is >= 60 and <= 95,
+        "UploadStorage:ImageLossyQuality must be between 60 and 95.")
+    .Validate(options => options.MaxImageDimension is >= 1_024 and <= 16_384,
+        "UploadStorage:MaxImageDimension must be between 1024 and 16384.")
+    .Validate(options => options.MaxImagePixels is >= 1_000_000 and <= 50_000_000,
+        "UploadStorage:MaxImagePixels must be between 1000000 and 50000000.")
+    .Validate(options => options.MaxDecodedImageBytes is >= 16 * 1024 * 1024 and <= 256L * 1024 * 1024,
+        "UploadStorage:MaxDecodedImageBytes must be between 16 MiB and 256 MiB.")
+    .Validate(options => options.MaxAnimatedImageTotalPixels is >= 1_000_000 and <= 50_000_000,
+        "UploadStorage:MaxAnimatedImageTotalPixels must be between 1000000 and 50000000.")
+    .Validate(options => options.MaxStoredImageDimension is >= 1_024 and <= 16_384,
+        "UploadStorage:MaxStoredImageDimension must be between 1024 and 16384.")
+    .Validate(options => (options.PreferredStillImageFormat ?? string.Empty).Trim().ToLowerInvariant()
+            is "preserve" or "avif" or "webp" or "jpeg" or "jpg",
+        "UploadStorage:PreferredStillImageFormat must be preserve, avif, webp or jpeg.")
+    .ValidateOnStart();
 
 builder.Services
     .AddOptions<UploadInternalApiOptions>()
@@ -178,6 +208,51 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
+// A busy/unavailable shared lifecycle store is a temporary infrastructure failure,
+// not an application bug and never a reason to acknowledge a parent mutation.
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next(context);
+    }
+    catch (TimeoutException exception)
+    {
+        context.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("UploadLifecycle")
+            .LogWarning(exception, "Media lifecycle storage timed out.");
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(
+            new { error = "Media lifecycle storage is temporarily unavailable." },
+            context.RequestAborted);
+    }
+});
+
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/internal/media") ||
+        context.Request.Path.Equals("/media/assets/finalize", StringComparison.OrdinalIgnoreCase))
+    {
+        var maxBodyBytes = context.Request.Path.StartsWithSegments("/internal/media")
+            ? UploadSecurity.MaxInternalLifecycleBodyBytes
+            : MaxBrowserFinalizeBodyBytes;
+        var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false })
+        {
+            sizeFeature.MaxRequestBodySize = maxBodyBytes;
+        }
+        if (context.Request.ContentLength > maxBodyBytes)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            return;
+        }
+    }
+    await next(context);
+});
+
 app.UseMiddleware<InternalRequestSignatureMiddleware>();
 app.UseCors("Frontend");
 app.UseAuthentication();
@@ -253,8 +328,12 @@ app.Use(async (context, next) =>
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
-app.MapGet("/health/ready", async (IInternalNonceStore nonceStore, CancellationToken cancellationToken) =>
-    await nonceStore.IsAvailableAsync(cancellationToken)
+app.MapGet("/health/ready", async (
+        IInternalNonceStore nonceStore,
+        UploadAssetStore assetStore,
+        CancellationToken cancellationToken) =>
+    await nonceStore.IsAvailableAsync(cancellationToken) &&
+    await assetStore.IsStorageAvailableAsync(cancellationToken)
         ? Results.Ok(new { status = "ready" })
         : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 
@@ -383,7 +462,8 @@ app.MapDelete("/media/assets/{assetId}", async (
             ? Results.NoContent()
             : Results.NotFound();
     })
-    .RequireAuthorization();
+    .RequireAuthorization()
+    .RequireRateLimiting(UploadRateLimitPolicy);
 
 app.MapPost("/media/assets/finalize", async (
         MediaAssetIdsRequest body,
@@ -395,14 +475,19 @@ app.MapPost("/media/assets/finalize", async (
         {
             return Results.Unauthorized();
         }
-        var assetIds = (body.AssetIds ?? Array.Empty<string>())
-            .Where(assetId => !string.IsNullOrWhiteSpace(assetId))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (assetIds.Any(assetId => !Guid.TryParseExact(assetId, "N", out _)))
+        var rawAssetIds = body.AssetIds ?? Array.Empty<string>();
+        if (rawAssetIds.Count > MaxBrowserFinalizeAssets)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (rawAssetIds.Any(assetId => string.IsNullOrWhiteSpace(assetId) ||
+                                       !Guid.TryParseExact(assetId, "N", out _)))
         {
             return Results.BadRequest(new { error = "The finalize request contains an invalid asset identifier." });
         }
+        var assetIds = rawAssetIds
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
         var count = await assetStore.FinalizeOwnedAsync(assetIds, ownerUserId, cancellationToken);
         if (count != assetIds.Length)
@@ -414,7 +499,8 @@ app.MapPost("/media/assets/finalize", async (
         }
         return Results.Ok(new { finalized = count });
     })
-    .RequireAuthorization();
+    .RequireAuthorization()
+    .RequireRateLimiting(UploadRateLimitPolicy);
 
 app.MapPost("/internal/media/finalize", async (
         MediaUrlsRequest body,
@@ -427,7 +513,71 @@ app.MapPost("/internal/media/finalize", async (
         {
             return Results.Unauthorized();
         }
-        var urls = body.Urls ?? Array.Empty<string>();
+        var references = body.References ?? Array.Empty<UploadMediaReference>();
+        var suppliedUrls = body.Urls ?? Array.Empty<string>();
+        if (references.Count > UploadAssetStore.MaxLifecycleBatchSize)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (suppliedUrls.Count > UploadAssetStore.MaxLifecycleBatchSize)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (references.Count > 0 && suppliedUrls.Count > 0)
+        {
+            return Results.BadRequest(new { error = "Provide references or legacy URLs, not both." });
+        }
+        if (references.Count > 0)
+        {
+            if (body.OwnerUserId is not > 0)
+            {
+                return Results.BadRequest(new { error = "ownerUserId is required for reference lifecycle requests." });
+            }
+            if (body.OperationAt is null)
+            {
+                return Results.BadRequest(new { error = "The finalize request requires operationAt." });
+            }
+            var referenceResult = await assetStore.AttachReferencesDetailedAsync(
+                references,
+                body.OwnerUserId,
+                body.OperationAt,
+                cancellationToken);
+            if (referenceResult.NormalizedCount != referenceResult.RequestedCount)
+            {
+                return Results.BadRequest(new { error = "The finalize request contains an invalid media reference." });
+            }
+            if (referenceResult.OwnershipMismatchCount > 0)
+            {
+                return Results.Conflict(new { error = "Media ownership validation failed." });
+            }
+            if (referenceResult.CapacityExceededCount > 0)
+            {
+                // Capacity can become available after other parents detach. Treat it as
+                // retryable so a committed parent is never permanently left untracked.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            if (referenceResult.InvalidOperationTimeCount > 0)
+            {
+                // A required timestamp was supplied above; this branch represents
+                // dependency clock skew and must remain retryable after NTP recovers.
+                return Results.Json(
+                    new { error = "The finalize request operationAt is too far in the future." },
+                    statusCode: 425);
+            }
+            if (referenceResult.MissingFileCount > 0 ||
+                referenceResult.MetadataUnavailableCount > 0 ||
+                referenceResult.AppliedCount != referenceResult.NormalizedCount)
+            {
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            return Results.Ok(new
+            {
+                finalized = referenceResult.AppliedCount,
+                stale = referenceResult.StaleCount
+            });
+        }
+
+        var urls = suppliedUrls;
         var result = await assetStore.FinalizeDetailedAsync(
             urls,
             body.OwnerUserId,
@@ -445,7 +595,9 @@ app.MapPost("/internal/media/finalize", async (
         {
             return Results.Conflict(new { error = "Media ownership validation failed." });
         }
-        if (result.MissingFileCount > 0 || result.FinalizedCount != result.NormalizedCount)
+        if (result.MissingFileCount > 0 ||
+            result.MetadataUnavailableCount > 0 ||
+            result.FinalizedCount != result.NormalizedCount)
         {
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
@@ -466,12 +618,62 @@ app.MapPost("/internal/media/authorize", async (
         {
             return Results.Unauthorized();
         }
-        if (body.OwnerUserId is not { } ownerUserId)
+        if (body.OwnerUserId is not > 0)
         {
             return Results.BadRequest(new { error = "ownerUserId is required." });
         }
+        var ownerUserId = body.OwnerUserId.Value;
+        var references = body.References ?? Array.Empty<UploadMediaReference>();
+        var urls = body.Urls ?? Array.Empty<string>();
+        if (references.Count > UploadAssetStore.MaxLifecycleBatchSize ||
+            urls.Count > UploadAssetStore.MaxLifecycleBatchSize)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (references.Count > 0 && urls.Count > 0)
+        {
+            return Results.BadRequest(new { error = "Provide references or legacy URLs, not both." });
+        }
+        if (references.Count > 0)
+        {
+            if (body.OperationAt is null)
+            {
+                return Results.BadRequest(new { error = "The authorize request requires operationAt." });
+            }
+            var referenceResult = await assetStore.AuthorizeReferencesDetailedAsync(
+                references,
+                ownerUserId,
+                body.OperationAt,
+                cancellationToken);
+            if (referenceResult.InvalidOperationTimeCount > 0)
+            {
+                return Results.Json(
+                    new { error = "The authorize request operationAt is too far in the future." },
+                    statusCode: 425);
+            }
+            if (referenceResult.NormalizedCount != referenceResult.RequestedCount)
+            {
+                return Results.BadRequest(new { error = "The authorize request contains an invalid media reference." });
+            }
+            if (referenceResult.CapacityExceededCount > 0)
+            {
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            return Results.Ok(new
+            {
+                authorized = referenceResult.UnauthorizedUrls.Count == 0,
+                unauthorizedUrls = referenceResult.UnauthorizedUrls,
+                // A new exact-reference client must require these acknowledgements.
+                // Older Upload versions deserialize unknown `references` as an empty
+                // legacy URL request and can otherwise return a false-positive success
+                // during a rolling deployment.
+                exactReferences = true,
+                lifecycleVersion = UploadAssetStore.CurrentLifecycleVersion,
+                referenceCount = referenceResult.NormalizedCount
+            });
+        }
         var unauthorized = await assetStore.FindUnauthorizedUrlsAsync(
-            body.Urls ?? Array.Empty<string>(),
+            urls,
             ownerUserId,
             cancellationToken);
         return Results.Ok(new { authorized = unauthorized.Count == 0, unauthorizedUrls = unauthorized });
@@ -488,15 +690,74 @@ app.MapPost("/internal/media/delete", async (
         {
             return Results.Unauthorized();
         }
+        var references = body.References ?? Array.Empty<UploadMediaReference>();
+        var urls = body.Urls ?? Array.Empty<string>();
+        if (references.Count > UploadAssetStore.MaxLifecycleBatchSize)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (urls.Count > UploadAssetStore.MaxLifecycleBatchSize)
+        {
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        if (references.Count > 0 && urls.Count > 0)
+        {
+            return Results.BadRequest(new { error = "Provide references or legacy URLs, not both." });
+        }
+        if (references.Count > 0)
+        {
+            if (body.OperationAt is null)
+            {
+                return Results.BadRequest(new { error = "The delete request requires operationAt." });
+            }
+            var result = await assetStore.DetachReferencesDetailedAsync(
+                references,
+                body.OwnerUserId,
+                body.OperationAt,
+                cancellationToken);
+            if (result.NormalizedCount != result.RequestedCount)
+            {
+                return Results.BadRequest(new { error = "The delete request contains an invalid media reference." });
+            }
+            if (result.OwnershipMismatchCount > 0)
+            {
+                return Results.Conflict(new { error = "Media ownership validation failed." });
+            }
+            if (result.MetadataUnavailableCount > 0)
+            {
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            if (result.InvalidOperationTimeCount > 0)
+            {
+                return Results.Json(
+                    new { error = "The delete request operationAt is too far in the future." },
+                    statusCode: 425);
+            }
+            if (result.CapacityExceededCount > 0)
+            {
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            return Results.Ok(new
+            {
+                detached = result.AppliedCount,
+                stale = result.StaleCount
+            });
+        }
+
         var count = await assetStore.DeleteByUrlsAsync(
-            body.Urls ?? Array.Empty<string>(),
+            urls,
             body.OwnerUserId,
             cancellationToken);
-        return Results.Ok(new { deleted = count });
+        return Results.Ok(new { scheduled = count });
     });
 
 // Serve uploaded files
-app.MapGet("/media/files/{fileName}", (string fileName, IOptions<UploadStorageOptions> options) =>
+app.MapGet("/media/files/{fileName}", async (
+    string fileName,
+    HttpContext context,
+    IOptions<UploadStorageOptions> options,
+    UploadAssetStore assetStore,
+    CancellationToken cancellationToken) =>
 {
     if (!UploadSecurity.IsSafeLeafFileName(fileName))
     {
@@ -505,11 +766,15 @@ app.MapGet("/media/files/{fileName}", (string fileName, IOptions<UploadStorageOp
 
     var root = UploadSecurity.ResolveStorageRoot(options.Value);
     var path = IOPath.GetFullPath(IOPath.Combine(root, fileName));
-    if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+    if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) ||
+        !await assetStore.CanServeAsync(fileName, cancellationToken))
     {
         return Results.NotFound();
     }
 
+    // Until a deployment has a verified CDN purge protocol, a client/proxy must not
+    // retain bytes after the final parent reference is deleted and tombstoned.
+    context.Response.Headers.CacheControl = "private, no-store";
     return Results.File(path, UploadSecurity.ResolveContentTypeFromExtension(IOPath.GetExtension(path)), enableRangeProcessing: true);
 });
 
@@ -573,7 +838,23 @@ public sealed class UploadStorageOptions
     public string RootPath { get; init; } = ".data/media";
     public bool StagedUploadsEnabled { get; init; }
     public int PendingLifetimeMinutes { get; init; } = 1_440;
-    public int CleanupIntervalMinutes { get; init; } = 10;
+    public int CleanupIntervalMinutes { get; init; } = 2;
+    public int PendingCleanupGraceMinutes { get; init; } = 120;
+    public int ReferenceDeleteGraceMinutes { get; init; } = 0;
+    public int AuthorizationReservationMinutes { get; init; } = 10_080;
+    public int BrowserReservationMinutes { get; init; } = 120;
+    public int DeletedTombstoneRetentionMinutes { get; init; } = 43_200;
+    public int QuarantineRetentionMinutes { get; init; } = 60;
+    public int LifecycleLockTimeoutSeconds { get; init; } = 15;
+    public bool CleanupEnabled { get; init; } = true;
+    public string[] AllowedMediaOrigins { get; init; } = Array.Empty<string>();
+    public int ImageLossyQuality { get; init; } = 78;
+    public int MaxImageDimension { get; init; } = 16_384;
+    public long MaxImagePixels { get; init; } = 50_000_000;
+    public long MaxDecodedImageBytes { get; init; } = 200L * 1024 * 1024;
+    public long MaxAnimatedImageTotalPixels { get; init; } = 50_000_000;
+    public int MaxStoredImageDimension { get; init; } = 6_144;
+    public string PreferredStillImageFormat { get; init; } = "preserve";
 }
 
 public sealed class UploadInternalApiOptions
@@ -618,7 +899,11 @@ public sealed record MediaUploadResponse(
     string State,
     DateTimeOffset? ExpiresAt);
 
-public sealed record MediaUrlsRequest(IReadOnlyList<string>? Urls, long? OwnerUserId = null);
+public sealed record MediaUrlsRequest(
+    IReadOnlyList<string>? Urls = null,
+    long? OwnerUserId = null,
+    IReadOnlyList<UploadMediaReference>? References = null,
+    DateTimeOffset? OperationAt = null);
 public sealed record MediaAssetIdsRequest(IReadOnlyList<string>? AssetIds);
 
 internal static class UploadInternalAuthentication
@@ -703,6 +988,7 @@ internal static class UploadSecurity
     public const long MaxStandardUploadBytes = 25 * 1024 * 1024;
     public const long MaxVideoUploadBytes = 500 * 1024 * 1024;
     public const long MaxRequestBodyBytes = MaxVideoUploadBytes + (2 * 1024 * 1024);
+    public const long MaxInternalLifecycleBodyBytes = 512 * 1024;
 
     private static readonly IReadOnlyDictionary<string, MediaKind> AllowedTypes = new Dictionary<string, MediaKind>(StringComparer.OrdinalIgnoreCase)
     {
@@ -710,6 +996,7 @@ internal static class UploadSecurity
         ["image/png"] = new("image", ".png", [".png"]),
         ["image/gif"] = new("image", ".gif", [".gif"]),
         ["image/webp"] = new("image", ".webp", [".webp"]),
+        ["image/avif"] = new("image", ".avif", [".avif"]),
         ["audio/webm"] = new("audio", ".webm", [".webm"]),
         ["audio/mp4"] = new("audio", ".m4a", [".m4a", ".mp4"]),
         ["video/mp4"] = new("video", ".mp4", [".mp4"]),
@@ -829,47 +1116,160 @@ internal static class UploadSecurity
         var root = ResolveStorageRoot(options);
         Directory.CreateDirectory(root);
 
-        var kind = AllowedTypes[contentType];
-        var storedName = $"{Guid.NewGuid():N}{kind.StorageExtension}";
-        var destination = IOPath.GetFullPath(IOPath.Combine(root, storedName));
-        if (!destination.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        var originalKind = AllowedTypes[contentType];
+        string? storedName = null;
+        string? destination = null;
+        UploadAssetMetadata? metadataRecord = null;
+        var published = false;
+
+        // A validated stream is still private until its media container has been
+        // scrubbed. Quarantine lives below the storage root (same volume for the final
+        // atomic move), but cannot be addressed by /media/files/{leafName}.
+        var quarantineRoot = IOPath.GetFullPath(IOPath.Combine(root, ".quarantine"));
+        if (!quarantineRoot.StartsWith(root, StringComparison.OrdinalIgnoreCase))
         {
             return UploadValidationResult.Rejected("Invalid storage path.");
         }
+        Directory.CreateDirectory(quarantineRoot);
+        var quarantineId = Guid.NewGuid().ToString("N");
+        var sourceQuarantinePath = IOPath.Combine(quarantineRoot, quarantineId + ".source");
+        var sanitizedQuarantinePath = IOPath.Combine(quarantineRoot, quarantineId + ".sanitized");
 
         try
         {
-            await using (var output = File.Create(destination))
+            await using (var quarantine = new FileStream(
+                sourceQuarantinePath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                128 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await input.CopyToAsync(output, cancellationToken);
+                await input.CopyToAsync(quarantine, cancellationToken);
+                await quarantine.FlushAsync(cancellationToken);
             }
 
-            var metadataRecord = await assetStore.RegisterAsync(
-                storedName,
+            var sanitization = await MediaMetadataSanitizer.SanitizeAsync(
+                contentType,
+                sourceQuarantinePath,
+                sanitizedQuarantinePath,
+                options,
+                cancellationToken);
+
+            var outputContentType = sanitization.ContentType;
+            if (!AllowedTypes.TryGetValue(outputContentType, out var outputKind) ||
+                outputKind.Category != originalKind.Category)
+            {
+                return UploadValidationResult.Rejected("Media output type is not allowed.");
+            }
+            var outputExtension = sanitization.StorageExtension ?? outputKind.StorageExtension;
+            storedName = $"{Guid.NewGuid():N}{outputExtension}";
+            destination = IOPath.GetFullPath(IOPath.Combine(root, storedName));
+            if (!destination.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                return UploadValidationResult.Rejected("Invalid storage path.");
+            }
+
+            var sanitizedSize = new FileInfo(sanitizedQuarantinePath).Length;
+            var maxSanitizedSize = outputContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                ? MaxVideoUploadBytes
+                : MaxStandardUploadBytes;
+            if (sanitizedSize <= 0 || sanitizedSize > maxSanitizedSize)
+            {
+                return UploadValidationResult.Rejected("Media metadata could not be removed safely.");
+            }
+
+            await using (var sanitizedInput = new FileStream(
+                sanitizedQuarantinePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                var sanitizedHeadLength = (int)Math.Min(8192, sanitizedSize);
+                var sanitizedHead = new byte[sanitizedHeadLength];
+                var sanitizedHeadRead = await sanitizedInput.ReadAsync(
+                    sanitizedHead.AsMemory(),
+                    cancellationToken);
+                Array.Resize(ref sanitizedHead, sanitizedHeadRead);
+                if (!MatchesMagicHeader(outputContentType, sanitizedHead))
+                {
+                    return UploadValidationResult.Rejected("Media metadata could not be removed safely.");
+                }
+
+                sanitizedInput.Position = 0;
+                var sanitizedAudit = await AuditPayloadAsync(
+                    outputContentType,
+                    sanitizedInput,
+                    cancellationToken);
+                if (!sanitizedAudit.IsAllowed)
+                {
+                    return UploadValidationResult.Rejected("Media metadata could not be removed safely.");
+                }
+            }
+
+            // Make lifecycle state durable before the public path can exist. If the
+            // process dies after this write but before the move, pending cleanup sees a
+            // normal expired record; the inverse order left untracked public orphans.
+            metadataRecord = await assetStore.RegisterAsync(
+                storedName!,
                 ownerUserId,
                 IOPath.GetFileName(file.FileName),
-                contentType,
-                file.Length,
+                outputContentType,
+                sanitizedSize,
                 cancellationToken);
+            File.Move(sanitizedQuarantinePath, destination!);
+            published = true;
 
             return UploadValidationResult.Accepted(new MediaUploadResponse(
                 $"/media/files/{storedName}",
-                kind.Category,
-                contentType,
-                file.Length,
+                outputKind.Category,
+                outputContentType,
+                sanitizedSize,
                 IOPath.GetFileName(file.FileName),
                 metadataRecord.AssetId,
                 metadataRecord.State,
                 metadataRecord.ExpiresAt));
         }
+        catch (MediaSanitizationException)
+        {
+            return UploadValidationResult.Rejected("Media metadata could not be removed safely.");
+        }
         catch
         {
-            if (File.Exists(destination))
+            if (published && destination is not null && File.Exists(destination))
             {
                 File.Delete(destination);
             }
+            if (metadataRecord is not null)
+            {
+                try
+                {
+                    await assetStore.DeletePendingOwnedAsync(
+                        metadataRecord.AssetId,
+                        ownerUserId,
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // Best effort only: the durable pending record remains bounded by
+                    // normal expiry cleanup if rollback storage is temporarily offline.
+                }
+            }
 
             throw;
+        }
+        finally
+        {
+            if (File.Exists(sourceQuarantinePath))
+            {
+                File.Delete(sourceQuarantinePath);
+            }
+            if (File.Exists(sanitizedQuarantinePath))
+            {
+                File.Delete(sanitizedQuarantinePath);
+            }
         }
     }
 
@@ -1058,6 +1458,7 @@ internal static class UploadSecurity
             ".png" => "image/png",
             ".gif" => "image/gif",
             ".webp" => "image/webp",
+            ".avif" => "image/avif",
             ".webm" => "audio/webm",
             ".m4a" => "audio/mp4",
             ".mp4" => "video/mp4",
@@ -1081,6 +1482,7 @@ internal static class UploadSecurity
             "image/png" => HasPrefix(head, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
             "image/gif" => head.Length >= 6 && (head.AsSpan(0, 6).SequenceEqual("GIF87a"u8) || head.AsSpan(0, 6).SequenceEqual("GIF89a"u8)),
             "image/webp" => head.Length >= 12 && head.AsSpan(0, 4).SequenceEqual("RIFF"u8) && head.AsSpan(8, 4).SequenceEqual("WEBP"u8),
+            "image/avif" => IsAvifHeader(head),
             "audio/webm" => HasPrefix(head, 0x1A, 0x45, 0xDF, 0xA3),
             "audio/mp4" => head.Length >= 12 && head.AsSpan(4, 4).SequenceEqual("ftyp"u8),
             "video/mp4" => head.Length >= 12 && head.AsSpan(4, 4).SequenceEqual("ftyp"u8),
@@ -1100,6 +1502,33 @@ internal static class UploadSecurity
         HasPrefix(head, 0x50, 0x4B, 0x03, 0x04) ||
         HasPrefix(head, 0x50, 0x4B, 0x05, 0x06) ||
         HasPrefix(head, 0x50, 0x4B, 0x07, 0x08);
+
+    private static bool IsAvifHeader(byte[] head)
+    {
+        if (head.Length < 16 || !head.AsSpan(4, 4).SequenceEqual("ftyp"u8))
+        {
+            return false;
+        }
+
+        // AVIF files use an ISO-BMFF file type with avif/avis as the major brand,
+        // or mif1/msf1 as a compatible brand. Require a bounded, aligned brand list.
+        var major = head.AsSpan(8, 4);
+        if (major.SequenceEqual("avif"u8) || major.SequenceEqual("avis"u8))
+        {
+            return true;
+        }
+        var compatibleLength = Math.Min(head.Length - 16, 32);
+        for (var offset = 16; offset + 4 <= 16 + compatibleLength; offset += 4)
+        {
+            var brand = head.AsSpan(offset, 4);
+            if (brand.SequenceEqual("avif"u8) || brand.SequenceEqual("avis"u8) ||
+                brand.SequenceEqual("mif1"u8) || brand.SequenceEqual("msf1"u8))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static bool IsLikelyPlainText(byte[] head)
     {
