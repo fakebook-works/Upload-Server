@@ -155,6 +155,27 @@ public sealed class MediaOwnershipTests
         });
     }
 
+    [Fact]
+    public async Task Managed_root_relative_urls_are_accepted_but_protocol_relative_and_encoded_separators_are_rejected()
+    {
+        await WithStoreAsync(async (store, root) =>
+        {
+            var (ownUrl, _) = await CreateAssetAsync(store, root, Owner);
+            var storedName = ownUrl["/media/files/".Length..];
+            var protocolRelative = $"//example.invalid/media/files/{storedName}";
+            var encodedSeparator = ownUrl + "%5Cother.png";
+
+            var unauthorized = await store.FindUnauthorizedUrlsAsync(
+                [ownUrl, protocolRelative, encodedSeparator],
+                Owner,
+                CancellationToken.None);
+
+            Assert.DoesNotContain(ownUrl, unauthorized);
+            Assert.Contains(protocolRelative, unauthorized);
+            Assert.Contains(encodedSeparator, unauthorized);
+        });
+    }
+
     private static async Task<(string Url, string Path)> CreateAssetAsync(
         UploadAssetStore store,
         string root,

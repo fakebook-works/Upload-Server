@@ -1394,8 +1394,16 @@ public sealed class UploadAssetStore
             return null;
         }
 
+        var candidate = url.Trim();
         string path;
-        if (Uri.TryCreate(url, UriKind.Absolute, out var absolute))
+        // On Unix, Uri.TryCreate("/media/files/...", Absolute) produces a file: URI.
+        // Managed root-relative application paths must be recognized before absolute
+        // HTTP(S) parsing or every exact lifecycle request is rejected on Linux.
+        if (candidate.StartsWith("/media/files/", StringComparison.OrdinalIgnoreCase))
+        {
+            path = candidate.Split('?', '#')[0];
+        }
+        else if (Uri.TryCreate(candidate, UriKind.Absolute, out var absolute))
         {
             if (absolute.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(absolute.UserInfo) ||
                 !IsAllowedMediaOrigin(absolute))
@@ -1406,7 +1414,7 @@ public sealed class UploadAssetStore
         }
         else
         {
-            path = url.Split('?', '#')[0];
+            path = candidate.Split('?', '#')[0];
         }
 
         if (!path.StartsWith("/media/files/", StringComparison.OrdinalIgnoreCase))
@@ -1422,7 +1430,11 @@ public sealed class UploadAssetStore
         {
             return null;
         }
-        return UploadSecurity.IsSafeLeafFileName(storedName) ? storedName : null;
+        return !storedName.Contains('/') &&
+               !storedName.Contains('\\') &&
+               UploadSecurity.IsSafeLeafFileName(storedName)
+            ? storedName
+            : null;
     }
 
     private bool IsAllowedMediaOrigin(Uri absolute)
