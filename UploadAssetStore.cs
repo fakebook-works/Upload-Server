@@ -81,6 +81,7 @@ public sealed class UploadAssetStore
     public const int CurrentLifecycleVersion = 3;
     public const int CurrentPrivacyMetadataVersion = 1;
     public const int MaxLifecycleBatchSize = 512;
+    public const int MaxLifecycleUrlLength = 2_048;
     private const int MaxReferencesPerAsset = 2_048;
     private const int MaxPendingReferencesPerAsset = 2_048;
     private const int MaxReleasedReferencesPerAsset = 4_096;
@@ -166,6 +167,19 @@ public sealed class UploadAssetStore
         long size,
         CancellationToken cancellationToken)
     {
+        if (ownerUserId <= 0 ||
+            !UploadSecurity.IsSafeLeafFileName(originalName) ||
+            string.IsNullOrWhiteSpace(contentType) ||
+            contentType.Length > UploadSecurity.MaxContentTypeCharacters ||
+            contentType.Any(char.IsControl) ||
+            size <= 0 ||
+            size > (contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                ? UploadSecurity.MaxVideoUploadBytes
+                : UploadSecurity.MaxStandardUploadBytes))
+        {
+            throw new ArgumentException("Invalid media metadata.");
+        }
+
         if (!TryGetAssetId(storedName, out var assetId))
         {
             throw new InvalidOperationException("Stored media names must use a generated GUID asset identifier.");
@@ -1389,7 +1403,7 @@ public sealed class UploadAssetStore
 
     private string? TryNormalizeStoredName(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url))
+        if (string.IsNullOrWhiteSpace(url) || url.Length > MaxLifecycleUrlLength)
         {
             return null;
         }
@@ -1934,6 +1948,16 @@ public sealed class UploadAssetStore
                 (metadata.PendingReferences?.Values.Any(value =>
                     value is null || value.ExpiresAt <= value.ReservedAt ||
                     value.OperationAt > value.ReservedAt.Add(MaximumFutureOperationSkew)) ?? false) ||
+                (metadata.State != DeletedState &&
+                    (string.IsNullOrWhiteSpace(metadata.OriginalName) ||
+                     !UploadSecurity.IsSafeLeafFileName(metadata.OriginalName) ||
+                     string.IsNullOrWhiteSpace(metadata.ContentType) ||
+                     metadata.ContentType.Length > UploadSecurity.MaxContentTypeCharacters ||
+                     metadata.ContentType.Any(char.IsControl) ||
+                     metadata.Size <= 0 ||
+                     metadata.Size > (metadata.ContentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                         ? UploadSecurity.MaxVideoUploadBytes
+                         : UploadSecurity.MaxStandardUploadBytes))) ||
                 (metadata.ReservationKind is not null &&
                     metadata.ReservationKind != BrowserReservationKind &&
                     metadata.ReservationKind != LegacyUrlReservationKind) ||

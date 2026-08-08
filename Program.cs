@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
@@ -25,6 +26,15 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = UploadSecurity.MaxRequestBodyBytes;
+    // Keep multipart parsing itself bounded. The endpoint-level file-count checks happen
+    // after ReadFormAsync, so a hostile caller must not be able to spend one rate-limit
+    // permit on thousands of oversized headers/fields before those checks run.
+    options.MultipartHeadersCountLimit = 64;
+    options.MultipartHeadersLengthLimit = 16 * 1024;
+    options.KeyLengthLimit = 256;
+    options.ValueLengthLimit = 16 * 1024;
+    options.ValueCountLimit = 1_024;
+    options.MemoryBufferThreshold = 64 * 1024;
 });
 
 builder.Services
@@ -274,10 +284,22 @@ app.Use(async (context, next) =>
         var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
         var client = httpClientFactory.CreateClient("auth-service");
 
-        var authHeader = context.Request.Headers.Authorization.ToString();
+        var authorizationValues = context.Request.Headers.Authorization;
+        if (authorizationValues.Count != 1)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        var authHeader = authorizationValues[0]!;
         if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
             var token = authHeader["Bearer ".Length..].Trim();
+            if (token.Length is 0 or > AuthSessionValidation.MaxBearerTokenCharacters)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
 
             using var authRequest = new HttpRequestMessage(HttpMethod.Post, authOptions.Url);
             authRequest.Headers.Authorization =
@@ -289,10 +311,16 @@ app.Use(async (context, next) =>
 
             try
             {
-                using var response = await client.SendAsync(authRequest, context.RequestAborted);
-                var body = await response.Content.ReadAsStringAsync(context.RequestAborted);
+                using var response = await client.SendAsync(
+                    authRequest,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    context.RequestAborted);
+                var body = await AuthSessionValidation.ReadBoundedBodyAsync(
+                    response.Content,
+                    context.RequestAborted);
 
-                if (!response.IsSuccessStatusCode || !AuthSessionValidation.HasAuthenticatedUser(body, tokenUserId))
+                if (!response.IsSuccessStatusCode || body is null ||
+                    !AuthSessionValidation.HasAuthenticatedUser(body, tokenUserId))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     context.Response.ContentType = "application/json";
@@ -317,6 +345,11 @@ app.Use(async (context, next) =>
                 return;
             }
             catch (JsonException)
+            {
+                await AuthSessionValidation.WriteUnavailableAsync(context);
+                return;
+            }
+            catch (IOException)
             {
                 await AuthSessionValidation.WriteUnavailableAsync(context);
                 return;
@@ -351,6 +384,10 @@ app.MapPost("/media/upload", async (
         }
 
         var form = await request.ReadFormAsync(cancellationToken);
+        if (form.Files.Count != 1)
+        {
+            return Results.BadRequest(new { error = "Exactly one file is required." });
+        }
         var file = form.Files.GetFile("file");
         if (file is null)
         {
@@ -410,10 +447,11 @@ app.MapPost("/media/upload-multiple", async (
 
         foreach (var file in form.Files)
         {
+            var displayName = UploadSecurity.NormalizeFileName(file.FileName);
             var metadata = UploadSecurity.ValidateMetadata(file.FileName, file.ContentType, file.Length);
             if (!metadata.IsAllowed)
             {
-                results.Add(new { name = file.FileName, error = metadata.Error });
+                results.Add(new { name = displayName, error = metadata.Error });
                 hasErrors = true;
                 continue;
             }
@@ -423,7 +461,7 @@ app.MapPost("/media/upload-multiple", async (
             {
                 results.Add(new
                 {
-                    name = file.FileName,
+                    name = displayName,
                     url = stored.Response.Url,
                     type = stored.Response.Type,
                     contentType = stored.Response.ContentType,
@@ -435,7 +473,7 @@ app.MapPost("/media/upload-multiple", async (
             }
             else
             {
-                results.Add(new { name = file.FileName, error = stored.Error });
+                results.Add(new { name = displayName, error = stored.Error });
                 hasErrors = true;
             }
         }
@@ -914,12 +952,13 @@ internal static class UploadInternalAuthentication
     {
         var expected = options.SharedSecret ?? string.Empty;
         if (Encoding.UTF8.GetByteCount(expected) < 32 ||
-            !request.Headers.TryGetValue(HeaderName, out var provided))
+            !request.Headers.TryGetValue(HeaderName, out var provided) ||
+            provided.Count != 1)
         {
             return false;
         }
         var expectedBytes = Encoding.UTF8.GetBytes(expected);
-        var providedBytes = Encoding.UTF8.GetBytes(provided.ToString());
+        var providedBytes = Encoding.UTF8.GetBytes(provided[0]!);
         return expectedBytes.Length == providedBytes.Length &&
                System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes);
     }
@@ -927,6 +966,9 @@ internal static class UploadInternalAuthentication
 
 internal static class AuthSessionValidation
 {
+    public const int MaxBearerTokenCharacters = 16 * 1024;
+    public const int MaxResponseBytes = 64 * 1024;
+
     public static async Task WriteUnavailableAsync(HttpContext context)
     {
         context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
@@ -938,12 +980,21 @@ internal static class AuthSessionValidation
 
     public static bool HasAuthenticatedUser(string responseBody, long expectedUserId)
     {
-        using var document = JsonDocument.Parse(responseBody);
+        using var document = JsonDocument.Parse(responseBody, new JsonDocumentOptions
+        {
+            MaxDepth = 16,
+            AllowTrailingCommas = false,
+            CommentHandling = JsonCommentHandling.Disallow
+        });
         var root = document.RootElement;
 
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
         if (root.TryGetProperty("errors", out var errors) &&
-            errors.ValueKind == JsonValueKind.Array &&
-            errors.GetArrayLength() > 0)
+            (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() > 0))
         {
             return false;
         }
@@ -960,9 +1011,57 @@ internal static class AuthSessionValidation
         return userId.ValueKind switch
         {
             JsonValueKind.Number => userId.TryGetInt64(out var numericUserId) && numericUserId == expectedUserId,
-            JsonValueKind.String => long.TryParse(userId.GetString(), out var stringUserId) && stringUserId == expectedUserId,
+            JsonValueKind.String => TryParsePositiveIdentity(userId.GetString(), out var stringUserId) &&
+                                    stringUserId == expectedUserId,
             _ => false
         };
+    }
+
+    private static bool TryParsePositiveIdentity(string? value, out long userId)
+    {
+        userId = 0;
+        return !string.IsNullOrEmpty(value) &&
+               value.Length <= 19 &&
+               value.All(char.IsAsciiDigit) &&
+               long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out userId) &&
+               userId > 0;
+    }
+
+    public static async Task<string?> ReadBoundedBodyAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is { } contentLength && contentLength > MaxResponseBytes)
+        {
+            return null;
+        }
+
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken);
+        using var buffer = new MemoryStream(8 * 1024);
+        var chunk = new byte[8 * 1024];
+        while (true)
+        {
+            var read = await stream.ReadAsync(chunk.AsMemory(), cancellationToken);
+            if (read == 0)
+            {
+                try
+                {
+                    return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
+                        .GetString(buffer.GetBuffer(), 0, checked((int)buffer.Length));
+                }
+                catch (DecoderFallbackException)
+                {
+                    return null;
+                }
+            }
+
+            if (buffer.Length + read > MaxResponseBytes)
+            {
+                return null;
+            }
+
+            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken);
+        }
     }
 }
 
@@ -976,7 +1075,12 @@ internal static class UploadIdentity
         value = 0;
         var claims = principal?.FindAll(claimType).ToArray();
         return claims is { Length: 1 } &&
-               long.TryParse(claims[0].Value, out value) &&
+               claims[0].Value.Length <= 19 &&
+               long.TryParse(
+                   claims[0].Value,
+                   NumberStyles.None,
+                   CultureInfo.InvariantCulture,
+                   out value) &&
                value > 0;
     }
 }
@@ -985,6 +1089,10 @@ internal static class UploadIdentity
 
 internal static class UploadSecurity
 {
+    public const int MaxOriginalFileNameCharacters = 255;
+    public const int MaxOriginalFileNameUtf8Bytes = 1_024;
+    public const int MaxContentTypeCharacters = 128;
+    public const int MaxCombiningMarksInFileName = 32;
     public const long MaxStandardUploadBytes = 25 * 1024 * 1024;
     public const long MaxVideoUploadBytes = 500 * 1024 * 1024;
     public const long MaxRequestBodyBytes = MaxVideoUploadBytes + (2 * 1024 * 1024);
@@ -1046,6 +1154,17 @@ internal static class UploadSecurity
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return MetadataValidation.Rejected("File name is required.");
+        }
+
+        if (fileName.Length > MaxOriginalFileNameCharacters ||
+            Encoding.UTF8.GetByteCount(fileName) > MaxOriginalFileNameUtf8Bytes)
+        {
+            return MetadataValidation.Rejected("File name is too long.");
+        }
+
+        if ((contentType?.Length ?? 0) > MaxContentTypeCharacters)
+        {
+            return MetadataValidation.Rejected("Content type is too long.");
         }
 
         if (!IsSafeLeafFileName(fileName))
@@ -1212,10 +1331,11 @@ internal static class UploadSecurity
             // Make lifecycle state durable before the public path can exist. If the
             // process dies after this write but before the move, pending cleanup sees a
             // normal expired record; the inverse order left untracked public orphans.
+            var safeOriginalName = NormalizeFileName(file.FileName);
             metadataRecord = await assetStore.RegisterAsync(
                 storedName!,
                 ownerUserId,
-                IOPath.GetFileName(file.FileName),
+                safeOriginalName,
                 outputContentType,
                 sanitizedSize,
                 cancellationToken);
@@ -1227,7 +1347,7 @@ internal static class UploadSecurity
                 outputKind.Category,
                 outputContentType,
                 sanitizedSize,
-                IOPath.GetFileName(file.FileName),
+                safeOriginalName,
                 metadataRecord.AssetId,
                 metadataRecord.State,
                 metadataRecord.ExpiresAt));
@@ -1437,10 +1557,79 @@ internal static class UploadSecurity
 
     public static bool IsSafeLeafFileName(string fileName)
     {
+        if (string.IsNullOrEmpty(fileName) ||
+            fileName.Length > MaxOriginalFileNameCharacters ||
+            Encoding.UTF8.GetByteCount(fileName) > MaxOriginalFileNameUtf8Bytes)
+        {
+            return false;
+        }
+
         var safeName = IOPath.GetFileName(fileName);
-        return string.Equals(safeName, fileName, StringComparison.Ordinal) &&
-               !fileName.Contains("..", StringComparison.Ordinal) &&
-               fileName.IndexOfAny(IOPath.GetInvalidFileNameChars()) < 0;
+        if (!string.Equals(safeName, fileName, StringComparison.Ordinal) ||
+            fileName.Contains("..", StringComparison.Ordinal) ||
+            fileName.IndexOfAny(IOPath.GetInvalidFileNameChars()) >= 0)
+        {
+            return false;
+        }
+
+        // Validate the UTF-16 representation before EnumerateRunes. Invalid surrogate
+        // sequences would otherwise be surfaced as U+FFFD, making malformed metadata
+        // indistinguishable from an intentionally supplied replacement character.
+        for (var index = 0; index < fileName.Length; index++)
+        {
+            var character = fileName[index];
+            if (char.IsHighSurrogate(character))
+            {
+                if (index + 1 >= fileName.Length || !char.IsLowSurrogate(fileName[index + 1]))
+                {
+                    return false;
+                }
+                index++;
+                continue;
+            }
+            if (char.IsLowSurrogate(character))
+            {
+                return false;
+            }
+        }
+
+        var combiningMarks = 0;
+        foreach (var rune in fileName.EnumerateRunes())
+        {
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.Control or
+                UnicodeCategory.Format or
+                UnicodeCategory.Surrogate or
+                UnicodeCategory.PrivateUse or
+                UnicodeCategory.OtherNotAssigned)
+            {
+                return false;
+            }
+            if (category is UnicodeCategory.NonSpacingMark or
+                UnicodeCategory.SpacingCombiningMark or
+                UnicodeCategory.EnclosingMark)
+            {
+                combiningMarks++;
+                if (combiningMarks > MaxCombiningMarksInFileName)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    public static string NormalizeFileName(string fileName)
+    {
+        try
+        {
+            return fileName.Normalize(NormalizationForm.FormC);
+        }
+        catch (ArgumentException)
+        {
+            return fileName;
+        }
     }
 
     public static string ResolveStorageRoot(UploadStorageOptions options)

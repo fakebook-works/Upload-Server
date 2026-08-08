@@ -176,6 +176,22 @@ public sealed class MediaOwnershipTests
         });
     }
 
+    [Fact]
+    public async Task Lifecycle_urls_are_bounded_before_uri_parsing()
+    {
+        await WithStoreAsync(async (store, _) =>
+        {
+            var oversized = "/media/files/" + new string('a', UploadAssetStore.MaxLifecycleUrlLength);
+
+            var unauthorized = await store.FindUnauthorizedUrlsAsync(
+                [oversized],
+                Owner,
+                CancellationToken.None);
+
+            Assert.Contains(oversized, unauthorized);
+        });
+    }
+
     private static async Task<(string Url, string Path)> CreateAssetAsync(
         UploadAssetStore store,
         string root,

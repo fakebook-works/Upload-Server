@@ -21,6 +21,16 @@ public sealed class UploadAuthenticationTests
 {
     private const string InternalSecret = "test-upload-internal-secret-at-least-thirty-two-bytes";
 
+    [Theory]
+    [InlineData("{\"data\":{\"me\":{\"userId\":\"42\"}}}", true)]
+    [InlineData("{\"data\":{\"me\":{\"userId\":\"+42\"}}}", false)]
+    [InlineData("{\"errors\":true,\"data\":{\"me\":{\"userId\":\"42\"}}}", false)]
+    [InlineData("[]", false)]
+    public void Auth_response_shape_and_identity_are_validated_strictly(string payload, bool expected)
+    {
+        Assert.Equal(expected, AuthSessionValidation.HasAuthenticatedUser(payload, 42));
+    }
+
     [Fact]
     public void Internal_signing_matches_the_documented_cross_language_vectors()
     {
@@ -141,6 +151,34 @@ public sealed class UploadAuthenticationTests
 
             Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
             Assert.Contains("active-content audit", body, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot)) Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Single_upload_rejects_extra_file_sections_in_one_rate_limited_request()
+    {
+        var storageRoot = Path.Combine(Path.GetTempPath(), $"fakebook-upload-{Guid.NewGuid():N}");
+        try
+        {
+            await using var factory = new UploadServerFactory(storageRoot);
+            using var client = factory.CreateClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateToken());
+
+            using var form = new MultipartFormDataContent();
+            foreach (var name in new[] { "first.png", "second.png" })
+            {
+                var png = new ByteArrayContent(MediaMetadataSanitizerTests.CreatePng());
+                png.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+                form.Add(png, "file", name);
+            }
+
+            using var response = await client.PostAsync("/media/upload", form);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         }
         finally
         {

@@ -51,4 +51,31 @@ public sealed class UploadSizeLimitTests
         Assert.Equal(502 * MiB, UploadSecurity.MaxRequestBodyBytes);
         Assert.True(UploadSecurity.MaxRequestBodyBytes > UploadSecurity.MaxVideoUploadBytes);
     }
+
+    [Fact]
+    public void File_name_validation_bounds_unicode_and_rejects_format_controls()
+    {
+        var tooLong = new string('a', UploadSecurity.MaxOriginalFileNameCharacters + 1) + ".png";
+        var zalgo = "avatar" + new string('\u0301', UploadSecurity.MaxCombiningMarksInFileName + 1) + ".png";
+        var bidi = "avatar\u202E.png";
+        var privateUse = "avatar\uE000.png";
+        var supplementaryPrivateUse = "avatar\U000F0000.png";
+        var unassigned = "avatar\u0378.png";
+
+        Assert.False(UploadSecurity.ValidateMetadata(tooLong, "image/png", 1).IsAllowed);
+        Assert.False(UploadSecurity.ValidateMetadata(zalgo, "image/png", 1).IsAllowed);
+        Assert.False(UploadSecurity.ValidateMetadata(bidi, "image/png", 1).IsAllowed);
+        Assert.False(UploadSecurity.ValidateMetadata(privateUse, "image/png", 1).IsAllowed);
+        Assert.False(UploadSecurity.ValidateMetadata(supplementaryPrivateUse, "image/png", 1).IsAllowed);
+        Assert.False(UploadSecurity.ValidateMetadata(unassigned, "image/png", 1).IsAllowed);
+        Assert.True(UploadSecurity.ValidateMetadata("caf\u00E9.png", "image/png", 1).IsAllowed);
+    }
+
+    [Fact]
+    public void Content_type_metadata_is_bounded_before_allowlist_resolution()
+    {
+        var oversized = "image/png;" + new string('x', UploadSecurity.MaxContentTypeCharacters);
+
+        Assert.False(UploadSecurity.ValidateMetadata("avatar.png", oversized, 1).IsAllowed);
+    }
 }
